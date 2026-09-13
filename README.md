@@ -226,8 +226,8 @@ Verification runs at two levels, because HTTP checks cannot catch a client that
 renders a blank page:
 
 ```bash
-node scripts/verify.mjs <token> [baseUrl] [adminUsername] [adminPassword]   # 81 API checks
-node scripts/probe-ui.mjs [baseUrl]                                      # 39 browser checks
+node scripts/verify.mjs <token> [baseUrl] [adminUsername] [adminPassword]  # API checks
+node scripts/probe-ui.mjs [baseUrl]                                      # browser checks
 ```
 
 `probe-ui.mjs` drives a real browser (Playwright, using the installed Chrome) through login, ticket
@@ -241,15 +241,16 @@ are not the defaults (`admin` / `1`).
 src/
   app.ts              route composition and static serving
   server.ts           bootstrap: seed admin, seed token, listen
-  auth.ts             password hashing, token mint/verify
+  auth.ts             password hashing, token mint/verify, SYSTEM_ROLES
   config.ts           environment
+  time.ts             one timestamp format (ISO-8601 UTC) for SQL and JS
   db/                 schema, connection, migrations
   routes/api.ts       the only HTTP surface (JSON)
   services/tickets.ts business rules — the single source of truth
 web/
   src/api.ts          typed client, the one place the token is attached
   src/auth.tsx        session state and effective permissions, from /api/auth/me
-  src/pages/          tickets, ticket detail, users, roles, tokens, login
+  src/pages/          tickets, ticket detail, users, roles, tokens, account, login
 ```
 
 ## Contributing

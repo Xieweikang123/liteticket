@@ -99,6 +99,7 @@ src/
   app.ts              route composition and static serving
   server.ts           bootstrap: seed roles/admin/token, listen
   auth.ts             password hashing, token mint/verify, SYSTEM_ROLES
+  time.ts             the one timestamp format (ISO-8601 UTC) for SQL + JS
   db/schema.ts        tables + the PERMISSIONS catalog
   db/index.ts         migrations + BOOTSTRAP_SQL fallback (hand-maintained)
   routes/api.ts       the only HTTP surface (JSON); can() / role routes
@@ -107,7 +108,7 @@ web/
   src/api.ts          typed client, the one place the token is attached
   src/auth.tsx        session state + permissions from /api/auth/me
   src/styles.css      all styling; scoped class prefixes per surface
-  src/pages/          tickets, ticket detail, users, roles, tokens, login
+  src/pages/          tickets, ticket detail, users, roles, tokens, account, login
 ```
 
 ## Verification
@@ -118,12 +119,13 @@ Run what the repo already provides; do not invent a new layer.
 pnpm typecheck                                                          # server
 npx tsc --noEmit -p tsconfig.web.json                                   # client
 pnpm build                                                              # API to dist/, client to web/dist
-node scripts/verify.mjs <token> [baseUrl] [adminUsername] [adminPassword]  # 106 API checks
-node scripts/probe-ui.mjs [baseUrl]                                     # 43 browser checks
+node scripts/verify.mjs <token> [baseUrl] [adminUsername] [adminPassword]  # API checks
+node scripts/probe-ui.mjs [baseUrl]                                     # browser checks
 ```
 
-- `verify.mjs` takes a bearer token; the bootstrap token is printed once on first boot (pin it with
-  `LITETICKET_TOKEN`).
+- `verify.mjs` takes the **unbound bootstrap token** (printed once on first boot; pin it with
+  `LITETICKET_TOKEN`). Two checks assert what an unbound machine token can and cannot do, so a
+  user-bound token fails them.
 - `probe-ui.mjs` needs a **running server** and the seeded admin credentials (default
   `admin` / `1`; override with `PROBE_USERNAME` / `PROBE_PASSWORD`).
 - The client is served from `web/dist` by the API server. **A client change requires
