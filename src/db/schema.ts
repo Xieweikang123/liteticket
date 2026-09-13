@@ -1,10 +1,15 @@
 import { sql } from 'drizzle-orm';
 import { integer, sqliteTable, text, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
 
+export const USER_ROLES = ['admin', 'agent'] as const;
+
 /**
- * Users are deliberately minimal in v0.1: no auth provider, no roles beyond
- * `agent`. The token is what protects the API; users exist so tickets can be
- * assigned and comments attributed.
+ * Users are agents who log into the UI. `admin` can manage users and delete
+ * tickets; `agent` can work tickets but not administer.
+ *
+ * `passwordHash` is a scrypt digest in `salt:hash` hex form — never the
+ * plaintext. It is nullable so pre-existing rows survive the migration; the
+ * seed step fills it on first boot.
  */
 export const users = sqliteTable(
   'users',
@@ -12,12 +17,29 @@ export const users = sqliteTable(
     id: integer('id').primaryKey({ autoIncrement: true }),
     email: text('email').notNull(),
     name: text('name').notNull(),
+    role: text('role', { enum: ['admin', 'agent'] })
+      .notNull()
+      .default('agent'),
+    passwordHash: text('password_hash'),
     createdAt: text('created_at')
       .notNull()
       .default(sql`(datetime('now'))`),
   },
   (t) => [uniqueIndex('users_email_unique').on(t.email)],
 );
+
+/**
+ * Small key/value store for server-managed secrets (notably the session
+ * signing key). Keeping the key in the database means a single-command boot
+ * needs no config and sessions still survive a restart.
+ */
+export const settings = sqliteTable('settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  createdAt: text('created_at')
+    .notNull()
+    .default(sql`(datetime('now'))`),
+});
 
 /**
  * API tokens. Stored as a SHA-256 hash — the plaintext token is shown once at
@@ -126,6 +148,7 @@ export type Ticket = typeof tickets.$inferSelect;
 export type NewTicket = typeof tickets.$inferInsert;
 export type Comment = typeof comments.$inferSelect;
 export type Tag = typeof tags.$inferSelect;
+export type Setting = typeof settings.$inferSelect;
 
 export const TICKET_STATUSES = ['open', 'pending', 'closed'] as const;
 export const TICKET_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;

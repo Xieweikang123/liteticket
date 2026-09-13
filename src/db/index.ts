@@ -36,9 +36,17 @@ const BOOTSTRAP_SQL = [
      id INTEGER PRIMARY KEY AUTOINCREMENT,
      email TEXT NOT NULL,
      name TEXT NOT NULL,
+     role TEXT NOT NULL DEFAULT 'agent',
+     password_hash TEXT,
      created_at TEXT NOT NULL DEFAULT (datetime('now'))
    )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users (email)`,
+
+  `CREATE TABLE IF NOT EXISTS settings (
+     key TEXT PRIMARY KEY,
+     value TEXT NOT NULL,
+     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+   )`,
 
   `CREATE TABLE IF NOT EXISTS tokens (
      id INTEGER PRIMARY KEY AUTOINCREMENT,

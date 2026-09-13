@@ -55,8 +55,9 @@ If you need those today, use [Zammad](https://zammad.org/), [OTRS](https://otrs.
 - [x] Priority and tags
 - [x] Assignment to a user
 - [x] User management (create / edit / delete)
+- [x] Login with roles — admin / agent
 - [x] Comments — internal note and public reply
-- [x] REST API with token auth
+- [x] REST API with token or session auth
 - [ ] Email notification on create / assign / reply
 - [x] Web UI that works without configuration
 
@@ -88,7 +89,12 @@ database, starts the server, and opens your browser.
   it is shown once and stored only as a hash.
 ```
 
-The web UI needs no token; the API does.
+The web UI requires a login. On first boot an admin is seeded from
+`LITETICKET_ADMIN_EMAIL` / `LITETICKET_ADMIN_PASSWORD` (default
+`admin@localhost` / `1`); the banner prints it once. **Change the password, and
+set the env var, before exposing the server on a network.**
+
+The API accepts either the bearer token or a logged-in session cookie.
 
 ```bash
 curl http://127.0.0.1:8787/api/tickets \
@@ -112,11 +118,16 @@ curl http://127.0.0.1:8787/api/tickets \
 | `PORT` | `8787` | HTTP port; the launcher walks forward if it is taken |
 | `HOST` | `127.0.0.1` | Bind address; set `0.0.0.0` to expose on the LAN |
 | `LITETICKET_DB` | `./data/liteticket.db` | SQLite file path |
-| `LITETICKET_TOKEN` | generated | Use a known token instead of a generated one |
+| `LITETICKET_TOKEN` | generated | Use a known API token instead of a generated one |
+| `LITETICKET_ADMIN_EMAIL` | `admin@localhost` | Seed admin's email |
+| `LITETICKET_ADMIN_PASSWORD` | `1` | Seed admin's password — **set this in production** |
 
 ## API
 
-Every route below requires `Authorization: Bearer <token>`, except `/api/health`.
+Every route below requires either `Authorization: Bearer <token>` or a logged-in
+session cookie, except `/api/health`. A bearer token carries admin rights; a
+session is limited to its user's role. Routes marked **admin** reject sessions
+without the admin role.
 
 | Method | Path | Notes |
 |---|---|---|
@@ -125,14 +136,17 @@ Every route below requires `Authorization: Bearer <token>`, except `/api/health`
 | `GET` | `/api/tickets/:id` | `?includeInternal=true` to include internal notes |
 | `POST` | `/api/tickets` | `subject`, `requesterEmail` required |
 | `PATCH` | `/api/tickets/:id` | `status`, `priority`, `assigneeId`, `tags`, … |
-| `DELETE` | `/api/tickets/:id` | |
+| `DELETE` | `/api/tickets/:id` | **admin** |
 | `GET` | `/api/tickets/:id/comments` | internal notes hidden unless requested |
 | `POST` | `/api/tickets/:id/comments` | `isInternal: true` for an internal note |
 | `GET` | `/api/users` · `/api/users/:id` | |
-| `POST` | `/api/users` | `email`, `name` required |
-| `PATCH` | `/api/users/:id` | `email`, `name` |
-| `DELETE` | `/api/users/:id` | Unassigns their tickets rather than deleting history |
+| `POST` | `/api/users` | **admin**; `email`, `name`, optional `role`, `password` |
+| `PATCH` | `/api/users/:id` | **admin**; `email`, `name`, `role`, `password` |
+| `DELETE` | `/api/users/:id` | **admin**; unassigns their tickets rather than deleting history |
 | `GET` | `/api/tags` · `/api/stats` | |
+
+The last admin cannot be demoted or deleted, so the instance cannot lock itself
+out.
 
 Internal notes are excluded at the query level, not filtered in a view, so they cannot leak through
 an endpoint that forgot to check.
@@ -148,10 +162,10 @@ pnpm db:generate  # regenerate migrations after editing src/db/schema.ts
 pnpm db:studio    # browse the database
 ```
 
-Verify a running instance end to end (44 checks):
+Verify a running instance end to end:
 
 ```bash
-pnpm verify <token>
+node scripts/verify.mjs <token>
 ```
 
 

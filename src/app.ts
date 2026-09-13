@@ -3,26 +3,24 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { initDb } from './db/index.ts';
 import { apiRoutes } from './routes/api.ts';
 import { uiRoutes } from './routes/ui.tsx';
+import { loginRoutes } from './routes/login.tsx';
 
 /**
- * Compose the two surfaces over one database.
+ * Compose the surfaces over one database.
  *
- * /api/* → JSON, token-protected, for programs.
- * /ui/*  → HTML, for the browser.
+ * /api/*  → JSON, session- or token-authenticated, for programs.
+ * /ui/*   → HTML, session-authenticated, for the browser.
+ * /login  → public.
  *
- * Both call the same service layer, so the API cannot silently fall behind the
- * UI: they are the same operations with different renderings.
+ * API and UI call the same service layer, so the API cannot silently fall
+ * behind the UI: they are the same operations with different renderings.
  */
 export async function createApp(dbFile?: string) {
   const { db } = await initDb(dbFile);
 
   const app = new Hono();
 
-  app.route('/api', apiRoutes(db));
-  app.route('/', uiRoutes(db));
-
-  // htmx is served from disk rather than a CDN so the app works offline and
-  // behind a firewall — consistent with "no external dependencies".
+  // Static assets and login are public; everything else sits behind auth.
   app.use(
     '/static/*',
     serveStatic({
@@ -30,6 +28,10 @@ export async function createApp(dbFile?: string) {
       rewriteRequestPath: (p) => p.replace(/^\/static/, ''),
     }),
   );
+
+  app.route('/', loginRoutes(db));
+  app.route('/api', apiRoutes(db));
+  app.route('/', uiRoutes(db));
 
   app.notFound((c) =>
     c.req.path.startsWith('/api')

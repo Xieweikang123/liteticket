@@ -1,9 +1,13 @@
 import { Hono } from 'hono';
 import type { Db } from '../db/index.ts';
-import { TICKET_PRIORITIES, TICKET_STATUSES } from '../db/schema.ts';
+import { TICKET_PRIORITIES, TICKET_STATUSES, USER_ROLES } from '../db/schema.ts';
 import * as svc from '../services/tickets.ts';
+import { requireAdmin, requireSession } from '../session.ts';
+import type { SessionUser } from '../session.ts';
 import { Layout, PriorityPill, StatusPill, STATUS_LABEL } from '../views/layout.tsx';
 import { EmptyRow, TicketRow } from '../views/ticket-row.tsx';
+
+type UiEnv = { Variables: { user: SessionUser } };
 
 function parseTags(raw: string | undefined | null): string[] {
   if (!raw) return [];
@@ -19,7 +23,11 @@ function parseTags(raw: string | undefined | null): string[] {
  * surface's job.
  */
 export function uiRoutes(db: Db) {
-  const ui = new Hono();
+  const ui = new Hono<UiEnv>();
+
+  // The whole UI is behind a session. `/login`, `/logout`, and `/static` are
+  // mounted as separate public routes, so they are unaffected by this.
+  ui.use('*', requireSession(db));
 
   // ---- Pages -------------------------------------------------------------
 
@@ -38,7 +46,7 @@ export function uiRoutes(db: Db) {
     const counts = await svc.stats(db);
 
     return c.html(
-      <Layout title="工单" active="/">
+      <Layout title="工单" active="/" user={c.get('user')}>
         <div class="card">
           <form class="row" hx-get="/ui/tickets" hx-target="#ticket-list" hx-swap="outerHTML">
             <input
@@ -70,7 +78,7 @@ export function uiRoutes(db: Db) {
           </form>
         </div>
 
-        <TicketTable items={items} />
+        <TicketTable items={items} admin={c.get('user').role === 'admin'} />
       </Layout>,
     );
   });
@@ -79,7 +87,7 @@ export function uiRoutes(db: Db) {
     const people = await svc.listUsers(db);
 
     return c.html(
-      <Layout title="新建工单" active="/new">
+      <Layout title="新建工单" active="/new" user={c.get('user')}>
         <div class="card">
           <h2 style="margin-top:0">新建工单</h2>
           <form method="post" action="/ui/tickets">
@@ -136,16 +144,21 @@ export function uiRoutes(db: Db) {
     );
   });
 
-  ui.get('/users', async (c) => {
+  ui.get('/users', requireAdmin(), async (c) => {
     const people = await svc.listUsers(db);
 
     return c.html(
-      <Layout title="用户" active="/users">
+      <Layout title="用户" active="/users" user={c.get('user')}>
         <div class="card">
           <h2 style="margin-top:0">新建用户</h2>
           <form method="post" action="/ui/users" class="row">
             <input name="name" placeholder="姓名 *" required maxlength={200} />
             <input name="email" type="email" placeholder="邮箱 *" required style="min-width:240px" />
+            <input name="password" type="password" placeholder="密码（可选）" style="min-width:160px" />
+            <select name="role">
+              <option value="agent">客服</option>
+              <option value="admin">管理员</option>
+            </select>
             <button class="primary" type="submit">
               添加
             </button>
@@ -164,6 +177,20 @@ export function uiRoutes(db: Db) {
                 value={u.email}
                 required
                 style="min-width:240px"
+              />
+              <select name="role">
+                <option value="agent" selected={u.role === 'agent'}>
+                  客服
+                </option>
+                <option value="admin" selected={u.role === 'admin'}>
+                  管理员
+                </option>
+              </select>
+              <input
+                name="password"
+                type="password"
+                placeholder="新密码（留空不改）"
+                style="min-width:160px"
               />
               <span class="muted">{u.createdAt}</span>
               <span class="spacer" style="flex:1" />
@@ -186,11 +213,12 @@ export function uiRoutes(db: Db) {
 
   ui.get('/api-docs', (c) =>
     c.html(
-      <Layout title="API" active="/api-docs">
+      <Layout title="API" active="/api-docs" user={c.get('user')}>
         <div class="card">
           <h2 style="margin-top:0">REST API</h2>
           <p class="muted">
-            每个 UI 动作都有对应的 API。鉴权：<code>Authorization: Bearer &lt;token&gt;</code>
+            每个 UI 动作都有对应的 API。鉴权：<code>Authorization: Bearer &lt;token&gt;</code>{' '}
+            （机器凭证，拥有管理员权限）；或带登录后的会话 cookie。删除工单、用户写操作需要管理员。
           </p>
           <table>
             <thead>
@@ -207,14 +235,14 @@ export function uiRoutes(db: Db) {
                 ['GET', '/api/tickets/:id', '工单详情（?includeInternal=true 含内部备注）'],
                 ['POST', '/api/tickets', '创建工单'],
                 ['PATCH', '/api/tickets/:id', '更新工单（状态/优先级/指派/标签）'],
-                ['DELETE', '/api/tickets/:id', '删除工单'],
+                ['DELETE', '/api/tickets/:id', '删除工单（管理员）'],
                 ['GET', '/api/tickets/:id/comments', '评论列表'],
                 ['POST', '/api/tickets/:id/comments', '添加评论（isInternal=true 为内部备注）'],
                 ['GET', '/api/users', '用户列表'],
                 ['GET', '/api/users/:id', '用户详情'],
-                ['POST', '/api/users', '创建用户'],
-                ['PATCH', '/api/users/:id', '更新用户'],
-                ['DELETE', '/api/users/:id', '删除用户（工单转为未指派）'],
+                ['POST', '/api/users', '创建用户（管理员）'],
+                ['PATCH', '/api/users/:id', '更新用户，含 role/password（管理员）'],
+                ['DELETE', '/api/users/:id', '删除用户（管理员；工单转为未指派）'],
                 ['GET', '/api/tags', '标签列表'],
                 ['GET', '/api/stats', '状态计数'],
               ].map(([m, p, d]) => (
@@ -246,7 +274,7 @@ export function uiRoutes(db: Db) {
     const people = await svc.listUsers(db);
 
     return c.html(
-      <Layout title={ticket.subject}>
+      <Layout title={ticket.subject} user={c.get('user')}>
         <div class="card">
           <div class="row" style="justify-content:space-between">
             <h2 style="margin:0">{ticket.subject}</h2>
@@ -355,7 +383,7 @@ export function uiRoutes(db: Db) {
       tag: tag || undefined,
     });
 
-    return c.html(<TicketTable items={items} />);
+    return c.html(<TicketTable items={items} admin={c.get('user').role === 'admin'} />);
   });
 
   ui.patch('/ui/tickets/:id/status', async (c) => {
@@ -374,10 +402,10 @@ export function uiRoutes(db: Db) {
     if (!updated) return c.notFound();
 
     // htmx sends hx-vals as form-encoded for PATCH; fall back to query too.
-    return c.html(<TicketRow ticket={updated} />);
+    return c.html(<TicketRow ticket={updated} admin={c.get('user').role === 'admin'} />);
   });
 
-  ui.delete('/ui/tickets/:id', async (c) => {
+  ui.delete('/ui/tickets/:id', requireAdmin(), async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.notFound();
 
@@ -445,18 +473,23 @@ export function uiRoutes(db: Db) {
     const text = String(body.body ?? '').trim();
     if (!text) return c.text('body is required', 400);
 
+    // The comment is attributed to whoever is logged in — not to a form field.
+    const author = c.get('user');
     await svc.addComment(db, id, {
       body: text,
       isInternal: String(body.isInternal ?? 'false') === 'true',
+      authorId: author.id,
     });
 
     return c.redirect(`/tickets/${id}`, 303);
   });
 
-  ui.post('/ui/users', async (c) => {
+  ui.post('/ui/users', requireAdmin(), async (c) => {
     const body = await c.req.parseBody();
     const name = String(body.name ?? '').trim();
     const email = String(body.email ?? '').trim();
+    const roleRaw = String(body.role ?? 'agent');
+    const password = String(body.password ?? '');
 
     if (!name || !email) return c.text('name and email are required', 400);
 
@@ -464,32 +497,58 @@ export function uiRoutes(db: Db) {
       return c.text('email already in use', 409);
     }
 
-    await svc.createUser(db, { name, email });
+    await svc.createUser(db, {
+      name,
+      email,
+      role: USER_ROLES.includes(roleRaw as never) ? (roleRaw as 'admin' | 'agent') : 'agent',
+      password: password || undefined,
+    });
     return c.redirect('/users', 303);
   });
 
-  ui.post('/ui/users/:id/update', async (c) => {
+  ui.post('/ui/users/:id/update', requireAdmin(), async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.notFound();
 
     const body = await c.req.parseBody();
     const name = String(body.name ?? '').trim();
     const email = String(body.email ?? '').trim();
+    const roleRaw = String(body.role ?? '');
+    const password = String(body.password ?? '');
 
     if (!name || !email) return c.text('name and email are required', 400);
 
     const clash = await svc.getUserByEmail(db, email);
     if (clash && clash.id !== id) return c.text('email already in use', 409);
 
-    const updated = await svc.updateUser(db, id, { name, email });
+    const role = USER_ROLES.includes(roleRaw as never)
+      ? (roleRaw as 'admin' | 'agent')
+      : undefined;
+
+    if (role === 'agent' && (await svc.countAdmins(db, id)) === 0) {
+      return c.text('cannot demote the last admin', 409);
+    }
+
+    const updated = await svc.updateUser(db, id, {
+      name,
+      email,
+      role,
+      password: password || undefined,
+    });
     if (!updated) return c.notFound();
 
     return c.redirect('/users', 303);
   });
 
-  ui.post('/ui/users/:id/delete', async (c) => {
+  ui.post('/ui/users/:id/delete', requireAdmin(), async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.notFound();
+
+    const target = await svc.getUser(db, id);
+    if (!target) return c.notFound();
+    if (target.role === 'admin' && (await svc.countAdmins(db, id)) === 0) {
+      return c.text('cannot delete the last admin', 409);
+    }
 
     await svc.deleteUser(db, id);
     return c.redirect('/users', 303);
@@ -499,7 +558,7 @@ export function uiRoutes(db: Db) {
 }
 
 /** The table (and its wrapper) is a single swap target for htmx. */
-function TicketTable({ items }: { items: svc.TicketWithMeta[] }) {
+function TicketTable({ items, admin = false }: { items: svc.TicketWithMeta[]; admin?: boolean }) {
   return (
     <div id="ticket-list">
       {items.length === 0 ? (
@@ -521,7 +580,7 @@ function TicketTable({ items }: { items: svc.TicketWithMeta[] }) {
           </thead>
           <tbody>
             {items.map((t) => (
-              <TicketRow ticket={t} />
+              <TicketRow ticket={t} admin={admin} />
             ))}
           </tbody>
         </table>

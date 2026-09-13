@@ -8,7 +8,13 @@ import { PriorityPill, StatusPill } from './layout.tsx';
  * is always a complete, self-consistent piece of HTML. No client-side state,
  * no partial-patch bugs.
  */
-export function TicketRow({ ticket }: { ticket: TicketWithMeta }) {
+export function TicketRow({
+  ticket,
+  admin = false,
+}: {
+  ticket: TicketWithMeta;
+  admin?: boolean;
+}) {
   const id = `row-${ticket.id}`;
   const next = ticket.status === 'closed' ? 'open' : 'closed';
   const nextLabel = ticket.status === 'closed' ? '重新打开' : '关闭';
@@ -44,15 +50,17 @@ export function TicketRow({ ticket }: { ticket: TicketWithMeta }) {
           >
             {nextLabel}
           </button>
-          <button
-            class="danger"
-            hx-delete={`/ui/tickets/${ticket.id}`}
-            hx-confirm="确定删除这张工单？此操作不可撤销。"
-            hx-target={`#${id}`}
-            hx-swap="outerHTML"
-          >
-            删除
-          </button>
+          {admin && (
+            <button
+              class="danger"
+              hx-delete={`/ui/tickets/${ticket.id}`}
+              hx-confirm="确定删除这张工单？此操作不可撤销。"
+              hx-target={`#${id}`}
+              hx-swap="outerHTML"
+            >
+              删除
+            </button>
+          )}
         </div>
       </td>
     </tr>

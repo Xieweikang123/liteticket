@@ -107,8 +107,8 @@ log(dim('  starting…'));
 log('');
 
 if (!hadToken) {
-  log(yellow('  First run: an API token will be printed below. Save it —'));
-  log(yellow('  it is shown once and stored only as a hash.'));
+  log(yellow('  First run: an admin login and an API token will be printed below.'));
+  log(yellow('  Save the token — it is shown once and stored only as a hash.'));
   log('');
 }
 

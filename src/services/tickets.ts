@@ -1,7 +1,8 @@
 import { and, desc, eq, inArray, like, or, sql } from 'drizzle-orm';
 import type { Db } from '../db/index.ts';
 import { comments, tags, ticketTags, tickets, users } from '../db/schema.ts';
-import type { Comment, Ticket } from '../db/schema.ts';
+import type { Comment, Ticket, User } from '../db/schema.ts';
+import { hashPassword } from '../auth.ts';
 
 export interface TicketWithMeta extends Ticket {
   assigneeName: string | null;
@@ -258,54 +259,97 @@ export async function addComment(
   return created;
 }
 
-export async function listUsers(db: Db) {
-  return db.select().from(users).orderBy(users.name);
+/**
+ * The user shape safe to return over the API or render in the UI. `passwordHash`
+ * is deliberately absent — it is never selected, so it cannot leak by accident.
+ */
+export type PublicUser = Omit<User, 'passwordHash'>;
+
+const PUBLIC_USER_COLUMNS = {
+  id: users.id,
+  email: users.email,
+  name: users.name,
+  role: users.role,
+  createdAt: users.createdAt,
+};
+
+export async function listUsers(db: Db): Promise<PublicUser[]> {
+  return db.select(PUBLIC_USER_COLUMNS).from(users).orderBy(users.name);
 }
 
-export async function getUser(db: Db, id: number) {
+export async function getUser(db: Db, id: number): Promise<PublicUser | null> {
+  const rows = await db.select(PUBLIC_USER_COLUMNS).from(users).where(eq(users.id, id)).limit(1);
+  return rows[0] ?? null;
+}
+
+/** Full row including the password hash — for authentication only. */
+export async function getUserForAuth(db: Db, email: string) {
+  const rows = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  return rows[0] ?? null;
+}
+
+/** Full row by id, including the password hash — for session validation. */
+export async function getUserByIdForAuth(db: Db, id: number) {
   const rows = await db.select().from(users).where(eq(users.id, id)).limit(1);
   return rows[0] ?? null;
 }
 
-export async function getUserByEmail(db: Db, email: string) {
-  const rows = await db.select().from(users).where(eq(users.email, email)).limit(1);
+export async function getUserByEmail(db: Db, email: string): Promise<PublicUser | null> {
+  const rows = await db.select(PUBLIC_USER_COLUMNS).from(users).where(eq(users.email, email)).limit(1);
   return rows[0] ?? null;
 }
 
 export interface CreateUserInput {
   email: string;
   name: string;
+  role?: 'admin' | 'agent';
+  password?: string;
 }
 
 /**
  * Returns the existing user when the email is already taken, so the operation
  * is idempotent. Use `getUserByEmail` when a duplicate must be an error.
  */
-export async function createUser(db: Db, input: CreateUserInput) {
-  const existing = (
-    await db.select().from(users).where(eq(users.email, input.email)).limit(1)
-  )[0];
+export async function createUser(db: Db, input: CreateUserInput): Promise<PublicUser> {
+  const existing = await getUserByEmail(db, input.email);
   if (existing) return existing;
 
-  return (await db.insert(users).values({ email: input.email, name: input.name }).returning())[0]!;
+  const inserted = (
+    await db
+      .insert(users)
+      .values({
+        email: input.email,
+        name: input.name,
+        role: input.role ?? 'agent',
+        passwordHash: input.password ? hashPassword(input.password) : null,
+      })
+      .returning(PUBLIC_USER_COLUMNS)
+  )[0]!;
+  return inserted;
 }
 
 export interface UpdateUserInput {
   email?: string;
   name?: string;
+  role?: 'admin' | 'agent';
+  password?: string;
 }
 
 export async function updateUser(
   db: Db,
   id: number,
   patch: UpdateUserInput,
-): Promise<typeof users.$inferSelect | null> {
+): Promise<PublicUser | null> {
   const existing = await getUser(db, id);
   if (!existing) return null;
 
   const values: Record<string, unknown> = {};
   if (patch.email !== undefined) values.email = patch.email;
   if (patch.name !== undefined) values.name = patch.name;
+  if (patch.role !== undefined) values.role = patch.role;
+  if (patch.password !== undefined && patch.password.length > 0) {
+    values.passwordHash = hashPassword(patch.password);
+  }
 
   if (Object.keys(values).length > 0) {
     await db.update(users).set(values).where(eq(users.id, id));
@@ -324,6 +368,15 @@ export async function deleteUser(db: Db, id: number): Promise<boolean> {
   if (!existing) return false;
   await db.delete(users).where(eq(users.id, id));
   return true;
+}
+
+/** Count admins, so the last one cannot be demoted or deleted by mistake. */
+export async function countAdmins(db: Db, excludeId?: number): Promise<number> {
+  const rows = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.role, 'admin'));
+  return rows.filter((r) => r.id !== excludeId).length;
 }
 
 export async function listTags(db: Db) {

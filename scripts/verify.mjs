@@ -2,16 +2,18 @@
  * End-to-end verification for liteticket.
  *
  * Run against a live server:
- *   node scripts/verify.mjs <token> [baseUrl]
+ *   node scripts/verify.mjs <token> [baseUrl] [adminEmail] [adminPassword]
  *
  * Uses fetch with explicit UTF-8 so results are not affected by the terminal's
  * console encoding.
  */
 const token = process.argv[2];
 const base = process.argv[3] ?? 'http://127.0.0.1:8787';
+const adminEmail = process.argv[4] ?? 'admin@localhost';
+const adminPassword = process.argv[5] ?? '1';
 
 if (!token) {
-  console.error('usage: node scripts/verify.mjs <token> [baseUrl]');
+  console.error('usage: node scripts/verify.mjs <token> [baseUrl] [adminEmail] [adminPassword]');
   process.exit(1);
 }
 
@@ -40,7 +42,30 @@ async function api(path, init = {}) {
   } catch {
     body = text;
   }
-  return { status: res.status, body };
+  return { status: res.status, body, res };
+}
+
+/** Log in and return the session cookie, or null when the credentials fail. */
+async function login(email, password) {
+  const res = await fetch(`${base}/login`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ email, password }).toString(),
+  });
+  const setCookie = res.headers.get('set-cookie') ?? '';
+  const match = setCookie.match(/lt_session=([^;]+)/);
+  return match ? `lt_session=${match[1]}` : null;
+}
+
+/** GET a page as a browser would, optionally with a session cookie. */
+async function page(path, cookie) {
+  const res = await fetch(`${base}${path}`, {
+    redirect: 'manual',
+    headers: cookie ? { Cookie: cookie } : {},
+  });
+  const html = res.status === 200 ? await res.text() : '';
+  return { status: res.status, html, location: res.headers.get('location') };
 }
 
 console.log(`\nverifying ${base}\n`);
@@ -61,6 +86,30 @@ console.log(`\nverifying ${base}\n`);
 {
   const r = await api('/api/tickets', { headers: auth });
   check('good token accepted', r.status === 200, `status ${r.status}`);
+}
+
+// ---- login & sessions ----------------------------------------------------
+let cookie;
+{
+  const c = await login(adminEmail, adminPassword);
+  cookie = c;
+  check('admin can log in', Boolean(c), 'no session cookie returned');
+}
+{
+  const c = await login(adminEmail, 'definitely-wrong');
+  check('wrong password rejected', c === null);
+}
+{
+  const r = await api('/api/tickets', { headers: cookie ? { Cookie: cookie } : {} });
+  check('session accepted on the API', r.status === 200, `status ${r.status}`);
+}
+{
+  const p = await page('/', undefined);
+  check('logged-out UI redirects to /login', p.status === 303 && (p.location ?? '').includes('/login'), `status ${p.status}`);
+}
+{
+  const p = await page('/login', undefined);
+  check('login page is public', p.status === 200 && p.html.includes('登录'), `status ${p.status}`);
 }
 
 // ---- create --------------------------------------------------------------
@@ -234,44 +283,42 @@ let userId;
 
 // ---- UI surface ----------------------------------------------------------
 {
-  const res = await fetch(`${base}/`);
-  const html = await res.text();
-  check('list page renders', res.status === 200 && html.includes('liteticket'));
-  check('page includes htmx', html.includes('/static/htmx.min.js'));
-  check('page renders ticket row', html.includes('打印机无法连接'));
+  const p = await page('/', cookie);
+  check('list page renders', p.status === 200 && p.html.includes('liteticket'), `status ${p.status}`);
+  check('page includes htmx', p.html.includes('/static/htmx.min.js'));
+  check('page renders ticket row', p.html.includes('打印机无法连接'));
+  check('nav shows the logged-in user', p.html.includes('退出'));
 }
 {
   const res = await fetch(`${base}/static/htmx.min.js`);
   check('htmx asset served', res.status === 200);
 }
 {
-  const res = await fetch(`${base}/tickets/${ticketId}`);
-  const html = await res.text();
-  check('detail page renders', res.status === 200 && html.includes('已联系供应商'));
-  check('detail page shows internal note to agent', html.includes('内部：客户很难缠'));
+  const p = await page(`/tickets/${ticketId}`, cookie);
+  check('detail page renders', p.status === 200 && p.html.includes('已联系供应商'), `status ${p.status}`);
+  check('detail page shows internal note to agent', p.html.includes('内部：客户很难缠'));
 }
 {
-  const res = await fetch(`${base}/new`);
-  check('new ticket page renders', res.status === 200 && (await res.text()).includes('新建工单'));
+  const p = await page('/new', cookie);
+  check('new ticket page renders', p.status === 200 && p.html.includes('新建工单'), `status ${p.status}`);
 }
 {
-  const res = await fetch(`${base}/api-docs`);
-  check('api docs page renders', res.status === 200);
+  const p = await page('/api-docs', cookie);
+  check('api docs page renders', p.status === 200, `status ${p.status}`);
 }
 {
-  const res = await fetch(`${base}/users`);
-  const html = await res.text();
-  check('users page renders', res.status === 200 && html.includes('客服小李'));
+  const p = await page('/users', cookie);
+  check('users page renders for admin', p.status === 200 && p.html.includes('客服小李'), `status ${p.status}`);
 }
 {
-  const res = await fetch(`${base}/ui/tickets`);
+  const res = await fetch(`${base}/ui/tickets`, { headers: { Cookie: cookie } });
   const html = await res.text();
   check('htmx fragment returns rows without <html>', !html.includes('<html') && html.includes('ticket-list'));
 }
 {
   const res = await fetch(`${base}/ui/tickets/${ticketId}/status`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookie },
     body: 'status=closed',
   });
   const html = await res.text();
@@ -281,10 +328,87 @@ let userId;
 {
   const res = await fetch(`${base}/ui/tickets/${ticketId}/status`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookie },
     body: 'status=bogus',
   });
   check('invalid status rejected with 400', res.status === 400, `status ${res.status}`);
+}
+
+// ---- roles & guards ------------------------------------------------------
+{
+  const r = await api('/api/users', { headers: cookie ? { Cookie: cookie } : {} });
+  check('session can list users', r.status === 200, `status ${r.status}`);
+}
+{
+  const r = await api('/api/users', {
+    method: 'POST',
+    headers: { ...jsonAuth, Cookie: cookie },
+    body: JSON.stringify({ email: 'nope@example.com', name: 'nope', role: 'admin' }),
+  });
+  check('admin session may create a user', r.status === 201, `status ${r.status}`);
+  if (r.body?.id) await api(`/api/users/${r.body.id}`, { method: 'DELETE', headers: auth });
+}
+{
+  const r = await api('/api/users/999999', { method: 'DELETE', headers: auth });
+  check('deleting a missing user returns 404', r.status === 404, `status ${r.status}`);
+}
+{
+  // An agent session must not be able to administer.
+  const created = await api('/api/users', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ email: 'plain-agent@example.com', name: '普通客服', role: 'agent', password: 'secret' }),
+  });
+  const agentId = created.body?.id;
+  check('agent user created with role', created.body?.role === 'agent', JSON.stringify(created.body?.role));
+  check('password hash is never returned', created.body && !('passwordHash' in created.body));
+
+  const agentCookie = await login('plain-agent@example.com', 'secret');
+  check('agent can log in', Boolean(agentCookie));
+
+  if (agentCookie) {
+    const denied = await api('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8', Cookie: agentCookie },
+      body: JSON.stringify({ email: 'x@example.com', name: 'x' }),
+    });
+    check('agent cannot create users (403)', denied.status === 403, `status ${denied.status}`);
+
+    const del = await api(`/api/tickets/${ticketId}`, { method: 'DELETE', headers: { Cookie: agentCookie } });
+    check('agent cannot delete tickets (403)', del.status === 403, `status ${del.status}`);
+
+    const usersPage = await page('/users', agentCookie);
+    check('agent cannot open /users (403)', usersPage.status === 403, `status ${usersPage.status}`);
+
+    const ok = await api('/api/tickets', { headers: { Cookie: agentCookie } });
+    check('agent can still read tickets', ok.status === 200, `status ${ok.status}`);
+
+    // Changing the password must invalidate the already-issued session.
+    await api(`/api/users/${agentId}`, {
+      method: 'PATCH',
+      headers: jsonAuth,
+      body: JSON.stringify({ password: 'rotated' }),
+    });
+    const stale = await api('/api/tickets', { headers: { Cookie: agentCookie } });
+    check('password change invalidates old session', stale.status === 401, `status ${stale.status}`);
+  }
+
+  if (agentId) await api(`/api/users/${agentId}`, { method: 'DELETE', headers: auth });
+}
+{
+  // The last admin cannot be removed out from under the system.
+  const list = await api('/api/users', { headers: auth });
+  const admin = list.body?.items?.find((u) => u.email === adminEmail);
+  if (admin) {
+    const r = await api(`/api/users/${admin.id}`, {
+      method: 'PATCH',
+      headers: jsonAuth,
+      body: JSON.stringify({ role: 'agent' }),
+    });
+    check('last admin cannot be demoted', r.status === 409, `status ${r.status}`);
+  } else {
+    check('last admin cannot be demoted', false, 'seed admin not found');
+  }
 }
 
 // ---- delete --------------------------------------------------------------

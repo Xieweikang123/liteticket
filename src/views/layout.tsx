@@ -64,17 +64,23 @@ label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bot
 .comment .body{white-space:pre-wrap}
 `;
 
+export interface NavUser {
+  name: string;
+  role: 'admin' | 'agent';
+}
+
 export function Layout(props: {
   title: string;
   children: Child;
   active?: string;
   htmx?: boolean;
+  user?: NavUser;
 }) {
-  const { title, children, active, htmx = true } = props;
+  const { title, children, active, htmx = true, user } = props;
   const nav = [
     { href: '/', label: '工单' },
     { href: '/new', label: '新建' },
-    { href: '/users', label: '用户' },
+    ...(user?.role === 'admin' ? [{ href: '/users', label: '用户' }] : []),
     { href: '/api-docs', label: 'API' },
   ];
 
@@ -98,9 +104,14 @@ export function Layout(props: {
             </a>
           ))}
           <span class="spacer" />
-          <span class="muted" id="stats">
-            —
-          </span>
+          {user ? (
+            <span class="muted">
+              {user.name}（{user.role === 'admin' ? '管理员' : '客服'}） ·{' '}
+              <a href="/logout">退出</a>
+            </span>
+          ) : (
+            <a href="/login">登录</a>
+          )}
         </header>
         <main>{children}</main>
       </body>

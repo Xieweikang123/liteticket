@@ -1,13 +1,29 @@
 import { Hono } from 'hono';
+import type { MiddlewareHandler } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/index.ts';
-import { TICKET_PRIORITIES, TICKET_STATUSES } from '../db/schema.ts';
+import { TICKET_PRIORITIES, TICKET_STATUSES, USER_ROLES } from '../db/schema.ts';
 import { verifyToken } from '../auth.ts';
-import type { AuthContext } from '../auth.ts';
+import { readSession } from '../session.ts';
+import type { SessionUser } from '../session.ts';
 import * as svc from '../services/tickets.ts';
 
+/**
+ * Who is making the request.
+ *
+ * A bearer token is a machine credential and carries full (admin) rights — it
+ * is the thing deployments script against. A session cookie carries the
+ * logged-in user's role.
+ */
+export interface Principal {
+  source: 'token' | 'session';
+  userId: number | null;
+  name: string;
+  role: 'admin' | 'agent';
+}
+
 /** Context variables set by the auth middleware. */
-type ApiEnv = { Variables: { auth: AuthContext } };
+type ApiEnv = { Variables: { auth: Principal } };
 
 const createTicketSchema = z.object({
   subject: z.string().min(1, 'subject is required').max(500),
@@ -38,11 +54,15 @@ const createCommentSchema = z.object({
 const createUserSchema = z.object({
   email: z.email('email must be a valid email'),
   name: z.string().min(1, 'name is required').max(200),
+  role: z.enum(USER_ROLES).optional(),
+  password: z.string().min(1).max(200).optional(),
 });
 
 const updateUserSchema = z.object({
   email: z.email().optional(),
   name: z.string().min(1).max(200).optional(),
+  role: z.enum(USER_ROLES).optional(),
+  password: z.string().min(1).max(200).optional(),
 });
 
 const listQuerySchema = z.object({
@@ -67,26 +87,44 @@ export function apiRoutes(db: Db) {
   api.get('/health', (c) => c.json({ ok: true, version: '0.1.0' }));
 
   /**
-   * Every other /api route requires a bearer token. Mounted before the
-   * handlers so a new endpoint is protected by default, rather than by
-   * remembering to add a check.
+   * Every other /api route requires either a bearer token (machine credential,
+   * full rights) or a logged-in session cookie. Mounted before the handlers so
+   * a new endpoint is protected by default, rather than by remembering to add
+   * a check.
    */
   api.use('*', async (c, next) => {
     const header = c.req.header('Authorization') ?? '';
     const presented = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
 
-    if (!presented) {
-      return c.json({ error: 'missing bearer token' }, 401);
+    if (presented) {
+      const auth = await verifyToken(db, presented);
+      if (!auth) return c.json({ error: 'invalid token' }, 401);
+      c.set('auth', {
+        source: 'token',
+        userId: auth.userId,
+        name: auth.tokenName,
+        role: 'admin',
+      });
+      return next();
     }
 
-    const auth = await verifyToken(db, presented);
-    if (!auth) {
-      return c.json({ error: 'invalid token' }, 401);
-    }
-
-    c.set('auth', auth);
-    await next();
+    const user = await readSession(c, db);
+    if (!user) return c.json({ error: 'authentication required' }, 401);
+    c.set('auth', {
+      source: 'session',
+      userId: user.id,
+      name: user.name,
+      role: user.role,
+    });
+    return next();
   });
+
+  /** Guard privileged routes: tokens always pass; sessions need the admin role. */
+  const admin: MiddlewareHandler<ApiEnv> = async (c, next) => {
+    const principal = c.get('auth');
+    if (principal.source === 'token' || principal.role === 'admin') return next();
+    return c.json({ error: 'admin role required' }, 403);
+  };
 
   api.get('/tickets', async (c) => {
     const parsed = listQuerySchema.safeParse(c.req.query());
@@ -140,7 +178,7 @@ export function apiRoutes(db: Db) {
     return c.json(ticket);
   });
 
-  api.delete('/tickets/:id', async (c) => {
+  api.delete('/tickets/:id', admin, async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
 
@@ -167,7 +205,14 @@ export function apiRoutes(db: Db) {
     const parsed = createCommentSchema.safeParse(raw);
     if (!parsed.success) return c.json({ error: 'validation failed', issues: issues(parsed.error) }, 422);
 
-    const comment = await svc.addComment(db, id, parsed.data);
+    // A logged-in user's identity wins over a body-supplied one; a machine
+    // token may attribute to anyone (or no one).
+    const principal = c.get('auth');
+    const input = principal.source === 'session'
+      ? { ...parsed.data, authorId: principal.userId, authorEmail: null }
+      : parsed.data;
+
+    const comment = await svc.addComment(db, id, input);
     if (!comment) return c.json({ error: 'ticket not found' }, 404);
     return c.json(comment, 201);
   });
@@ -183,7 +228,7 @@ export function apiRoutes(db: Db) {
     return c.json(user);
   });
 
-  api.post('/users', async (c) => {
+  api.post('/users', admin, async (c) => {
     const raw = await c.req.json().catch(() => null);
     if (raw == null) return c.json({ error: 'invalid JSON body' }, 400);
 
@@ -198,7 +243,7 @@ export function apiRoutes(db: Db) {
     return c.json(user, 201);
   });
 
-  api.patch('/users/:id', async (c) => {
+  api.patch('/users/:id', admin, async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
 
@@ -213,16 +258,28 @@ export function apiRoutes(db: Db) {
       if (clash && clash.id !== id) return c.json({ error: 'email already in use' }, 409);
     }
 
+    // Never let the last admin be demoted — the system would lock itself out.
+    if (parsed.data.role === 'agent' && (await svc.countAdmins(db, id)) === 0) {
+      return c.json({ error: 'cannot demote the last admin' }, 409);
+    }
+
     const user = await svc.updateUser(db, id, parsed.data);
     if (!user) return c.json({ error: 'user not found' }, 404);
     return c.json(user);
   });
 
-  api.delete('/users/:id', async (c) => {
+  api.delete('/users/:id', admin, async (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
 
-    if (!(await svc.deleteUser(db, id))) return c.json({ error: 'user not found' }, 404);
+    const target = await svc.getUser(db, id);
+    if (!target) return c.json({ error: 'user not found' }, 404);
+
+    if (target.role === 'admin' && (await svc.countAdmins(db, id)) === 0) {
+      return c.json({ error: 'cannot delete the last admin' }, 409);
+    }
+
+    await svc.deleteUser(db, id);
     return c.body(null, 204);
   });
 
