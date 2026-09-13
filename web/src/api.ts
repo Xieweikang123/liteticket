@@ -9,14 +9,31 @@
 
 const TOKEN_KEY = 'liteticket.token';
 
-export type Role = 'admin' | 'agent';
+export type Permission =
+  | 'tickets.read'
+  | 'tickets.write'
+  | 'tickets.delete'
+  | 'users.read'
+  | 'users.manage'
+  | 'roles.manage';
 
 export interface AuthUser {
   id: number;
   username: string;
   email: string;
   name: string;
-  role: Role;
+  /** Role name (the machine key), resolved against the roles table. */
+  role: string;
+}
+
+export interface RoleRow {
+  id: number;
+  name: string;
+  label: string;
+  description: string | null;
+  permissions: Permission[];
+  isSystem: boolean;
+  createdAt: string;
 }
 
 export interface Ticket {
@@ -133,11 +150,18 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
 
 export const api = {
   login: (username: string, password: string) =>
-    request<{ token: string; user: AuthUser }>('/auth/login', {
+    request<{ token: string; user: AuthUser; permissions: Permission[] }>('/auth/login', {
       method: 'POST',
       body: { username, password },
       anonymous: true,
     }),
+
+  /**
+   * Revoke the current session server-side. Best-effort: the caller clears
+   * local state regardless, so a network failure still logs the user out of
+   * the browser (the token expires on its own).
+   */
+  logout: () => request<void>('/auth/logout', { method: 'POST' }),
 
   me: () =>
     request<{
@@ -145,10 +169,21 @@ export const api = {
       tokenId: number;
       userId: number | null;
       name: string;
-      role: Role;
+      role: string;
+      permissions: Permission[];
       /** Present only for a user-bound token. */
       user: AuthUser | null;
     }>('/auth/me'),
+
+  /**
+   * Change the signed-in user's password. The server revokes every token for
+   * the account on success, so the caller is logged out and must sign in again.
+   */
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<void>('/auth/password', {
+      method: 'POST',
+      body: { currentPassword, newPassword },
+    }),
 
   stats: () => request<Stats>('/stats'),
 
@@ -194,13 +229,29 @@ export const api = {
 
   listUsers: () => request<{ items: (AuthUser & { createdAt: string })[] }>('/users'),
 
-  createUser: (input: { username: string; email: string; name: string; role?: Role; password?: string }) =>
+  createUser: (input: { username: string; email: string; name: string; role?: string; password?: string }) =>
     request<AuthUser>('/users', { method: 'POST', body: input }),
 
   updateUser: (id: number, patch: Record<string, unknown>) =>
     request<AuthUser>(`/users/${id}`, { method: 'PATCH', body: patch }),
 
   deleteUser: (id: number) => request<void>(`/users/${id}`, { method: 'DELETE' }),
+
+  listRoles: () => request<{ items: RoleRow[] }>('/roles'),
+
+  listPermissions: () => request<{ items: Permission[] }>('/permissions'),
+
+  createRole: (input: {
+    name: string;
+    label: string;
+    description?: string | null;
+    permissions: Permission[];
+  }) => request<RoleRow>('/roles', { method: 'POST', body: input }),
+
+  updateRole: (id: number, patch: Record<string, unknown>) =>
+    request<RoleRow>(`/roles/${id}`, { method: 'PATCH', body: patch }),
+
+  deleteRole: (id: number) => request<void>(`/roles/${id}`, { method: 'DELETE' }),
 
   listTokens: () => request<{ items: TokenRow[] }>('/tokens'),
 

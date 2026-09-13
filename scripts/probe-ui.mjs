@@ -153,13 +153,13 @@ try {
   );
 
   // ---- token self-service --------------------------------------------------
-  await page.click('nav a:has-text("我的 Token")');
-  await page.waitForSelector('form:has-text("签发新 token")', { timeout: 8000 });
-  check('tokens page rendered', (await page.locator('form:has-text("签发新 token")').count()) > 0);
+  await page.click('nav a:has-text("我的令牌")');
+  await page.waitForSelector('form:has-text("签发新令牌")', { timeout: 8000 });
+  check('tokens page rendered', (await page.locator('form:has-text("签发新令牌")').count()) > 0);
 
   const tokenName = `ui-probe-${Date.now()}`;
-  await page.fill('form:has-text("签发新 token") input', tokenName);
-  await page.click('form:has-text("签发新 token") button[type="submit"]');
+  await page.fill('form:has-text("签发新令牌") input', tokenName);
+  await page.click('form:has-text("签发新令牌") button[type="submit"]');
   await page.waitForSelector('.mono', { timeout: 8000 });
 
   const freshToken = (await page.locator('.ok.mono').first().innerText()).trim();
@@ -184,6 +184,17 @@ try {
   check('users page rendered', (await page.locator('button:has-text("新建用户")').count()) > 0);
   await page.waitForSelector('td:has-text("admin")', { timeout: 8000 });
   check('admin row is present', (await page.locator('td:has-text("admin")').count()) > 0);
+
+  // ---- roles page ----------------------------------------------------------
+  await page.click('nav a:has-text("角色")');
+  await page.waitForSelector('button:has-text("新建角色")', { timeout: 8000 });
+  check('roles page rendered', (await page.locator('button:has-text("新建角色")').count()) > 0);
+  await page.waitForSelector('td:has-text("admin")', { timeout: 8000 });
+  check('built-in admin role is listed', (await page.locator('td:has-text("admin")').count()) > 0);
+  check(
+    'built-in roles are marked as not editable',
+    (await page.locator('text=不可编辑').count()) >= 2,
+  );
 
   // ---- an agent (non-admin) must boot cleanly ------------------------------
   //
@@ -225,17 +236,50 @@ try {
 
   check('agent can log in through the UI', !agentPage.url().includes('/login'), `url=${agentPage.url()}`);
   check('agent sees the top bar', (await agentPage.locator('.topbar').count()) === 1);
+  // The built-in agent role has users.read (so it can populate the assignee
+  // picker) but not users.manage, so it sees the users list without the
+  // management controls, and never the roles page.
   check(
-    'agent does NOT see the Users nav link',
-    (await agentPage.locator('nav a', { hasText: '用户' }).count()) === 0,
-    'agent should not be offered user management',
+    'agent sees the Users nav link (read-only)',
+    (await agentPage.locator('nav a', { hasText: '用户' }).count()) > 0,
+    'agent should at least see the users list',
+  );
+  check(
+    'agent does NOT see the Roles nav link',
+    (await agentPage.locator('nav a', { hasText: '角色' }).count()) === 0,
+    'agent should not be offered role management',
   );
   check(
     'agent sees the token self-service link',
-    (await agentPage.locator('nav a', { hasText: '我的 Token' }).count()) > 0,
+    (await agentPage.locator('nav a', { hasText: '我的令牌' }).count()) > 0,
+  );
+  check(
+    'agent sees the account (password) link',
+    (await agentPage.locator('nav a', { hasText: '账号' }).count()) > 0,
   );
 
+  // A non-admin has no users.manage, so the account page is the only place
+  // they can change their password. Exercise it for real.
+  await agentPage.click('nav a:has-text("账号")');
+  await agentPage.waitForSelector('form:has-text("修改密码")', { timeout: 8000 });
+  check('account page rendered', (await agentPage.locator('form:has-text("修改密码")').count()) > 0);
+  await agentPage.locator('.field:has-text("当前密码") input').fill(agentPassword);
+  await agentPage.fill('#account-new-password', 'agentpass456');
+  await agentPage.fill('#account-confirm-password', 'agentpass456');
+  await agentPage.locator('form:has-text("修改密码") button[type="submit"]').click();
+  await agentPage.waitForFunction(() => location.pathname.startsWith('/login'), { timeout: 8000 });
+  check('password change logs the agent out', agentPage.url().includes('/login'), `url=${agentPage.url()}`);
+
+  // The change revoked the old token, so sign back in with the new password
+  // before the remaining agent checks.
+  await agentPage.locator('form input').first().fill(agentUsername);
+  await agentPage.fill('input[type="password"]', 'agentpass456');
+  await agentPage.locator('button[type="submit"]').click();
+  await agentPage.waitForFunction(() => !location.pathname.startsWith('/login'), { timeout: 10000 });
+  check('agent can log in with the new password', !agentPage.url().includes('/login'), `url=${agentPage.url()}`);
+
   // An agent may still work tickets.
+  await agentPage.click('nav a:has-text("工单")');
   await agentPage.click(`a:has-text("${subject}")`);
   await agentPage.waitForSelector('h2', { timeout: 8000 });
   check('agent can open a ticket', (await agentPage.locator(`h2:has-text("${subject}")`).count()) > 0);

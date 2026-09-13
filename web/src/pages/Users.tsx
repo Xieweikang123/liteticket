@@ -1,23 +1,26 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.ts';
-import type { AuthUser, Role } from '../api.ts';
-import { useAuth, isAdmin } from '../auth.tsx';
-import { Empty, ErrorBox, Field, Loading, formatTime } from '../ui.tsx';
+import type { AuthUser, RoleRow } from '../api.ts';
+import { useAuth, can } from '../auth.tsx';
+import { Empty, ErrorBox, Drawer, Field, Loading, formatTime } from '../ui.tsx';
 
 type Row = AuthUser & { createdAt: string };
 
 export function UsersPage() {
-  const { user: me } = useAuth();
+  const { user: me, permissions } = useAuth();
   const [items, setItems] = useState<Row[]>([]);
+  const [roles, setRoles] = useState<RoleRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
+  const manage = can(permissions, 'users.manage');
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const r = await api.listUsers();
-      setItems(r.items);
+      const [u, r] = await Promise.all([api.listUsers(), api.listRoles()]);
+      setItems(u.items);
+      setRoles(r.items);
     } catch (err) {
       setError(err);
     } finally {
@@ -29,13 +32,15 @@ export function UsersPage() {
     void load();
   }, [load]);
 
-  if (!isAdmin(me?.role)) {
-    return <div className="center">需要管理员权限。</div>;
+  if (!can(permissions, 'users.read')) {
+    return <div className="center">需要用户查看权限。</div>;
   }
+
+  const roleLabel = new Map(roles.map((r) => [r.name, r.label]));
 
   return (
     <>
-      <NewUserCard onCreated={load} />
+      {manage && <NewUserCard roles={roles} onCreated={load} />}
       <ErrorBox error={error} />
       <div className="card" style={{ padding: 0 }}>
         {loading ? (
@@ -50,9 +55,9 @@ export function UsersPage() {
                 <th>用户名</th>
                 <th>姓名</th>
                 <th>邮箱</th>
-                <th style={{ width: 90 }}>角色</th>
+                <th style={{ width: 110 }}>角色</th>
                 <th style={{ width: 140 }}>创建时间</th>
-                <th style={{ width: 260 }}>操作</th>
+                {manage && <th style={{ width: 260 }}>操作</th>}
               </tr>
             </thead>
             <tbody>
@@ -60,6 +65,9 @@ export function UsersPage() {
                 <UserRow
                   key={u.id}
                   row={u}
+                  roles={roles}
+                  roleLabel={roleLabel}
+                  canManage={manage}
                   isSelf={u.id === me?.id}
                   onChanged={load}
                   onError={setError}
@@ -75,48 +83,22 @@ export function UsersPage() {
 
 function UserRow({
   row,
+  roles,
+  roleLabel,
+  canManage,
   isSelf,
   onChanged,
   onError,
 }: {
   row: Row;
+  roles: RoleRow[];
+  roleLabel: Map<string, string>;
+  canManage: boolean;
   isSelf: boolean;
   onChanged: () => void;
   onError: (e: unknown) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const [username, setUsername] = useState(row.username);
-  const [name, setName] = useState(row.name);
-  const [email, setEmail] = useState(row.email);
-  const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  async function save() {
-    setBusy(true);
-    onError(null);
-    try {
-      const patch: Record<string, unknown> = { username, name, email };
-      if (password) patch.password = password;
-      await api.updateUser(row.id, patch);
-      setEditing(false);
-      setPassword('');
-      onChanged();
-    } catch (err) {
-      onError(err);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function changeRole(role: Role) {
-    onError(null);
-    try {
-      await api.updateUser(row.id, { role });
-      onChanged();
-    } catch (err) {
-      onError(err);
-    }
-  }
 
   async function remove() {
     if (!confirm(`删除用户 ${row.name}？其名下工单的负责人会被置空。`)) return;
@@ -129,82 +111,161 @@ function UserRow({
     }
   }
 
-  if (editing) {
-    return (
+  return (
+    <>
       <tr>
         <td className="muted">{row.id}</td>
+        <td className="mono small">{row.username}</td>
         <td>
-          <input value={username} onChange={(e) => setUsername(e.target.value)} style={{ width: '100%' }} />
-        </td>
-        <td>
-          <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: '100%' }} />
-        </td>
-        <td>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} style={{ width: '100%' }} />
-        </td>
-        <td>
-          <select value={row.role} onChange={(e) => void changeRole(e.target.value as Role)}>
-            <option value="agent">agent</option>
-            <option value="admin">admin</option>
-          </select>
-        </td>
-        <td />
-        <td>
-          <div className="row">
-            <input
-              type="password"
-              placeholder="新密码（留空不改）"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={{ width: 130 }}
-            />
-            <button className="primary" onClick={save} disabled={busy}>
-              保存
-            </button>
-            <button onClick={() => setEditing(false)}>取消</button>
-          </div>
-        </td>
-      </tr>
-    );
-  }
-
-  return (
-    <tr>
-      <td className="muted">{row.id}</td>
-      <td className="mono small">{row.username}</td>
-      <td>
-        {row.name}
-        {isSelf && <span className="pill closed" style={{ marginLeft: 8 }}>我</span>}
-      </td>
-      <td className="small">{row.email}</td>
-      <td>
-        <span className={`pill ${row.role === 'admin' ? 'open' : 'closed'}`}>{row.role}</span>
-      </td>
-      <td className="small muted">{formatTime(row.createdAt)}</td>
-      <td>
-        <div className="row">
-          <button onClick={() => setEditing(true)}>编辑</button>
-          {row.role === 'admin' ? (
-            <button onClick={() => void changeRole('agent')}>降为 agent</button>
-          ) : (
-            <button onClick={() => void changeRole('admin')}>升为 admin</button>
+          {row.name}
+          {isSelf && (
+            <span className="pill closed" style={{ marginLeft: 8 }}>
+              我
+            </span>
           )}
-          <button className="danger" onClick={remove}>
-            删除
-          </button>
-        </div>
-      </td>
-    </tr>
+        </td>
+        <td className="small">{row.email}</td>
+        <td>
+          <span className={`pill ${row.role === 'admin' ? 'open' : 'closed'}`}>
+            {roleLabel.get(row.role) ?? row.role}
+          </span>
+        </td>
+        <td className="small muted">{formatTime(row.createdAt)}</td>
+        {canManage && (
+          <td>
+            <div className="row">
+              <button onClick={() => setEditing(true)}>编辑</button>
+              <button className="danger" onClick={remove}>
+                删除
+              </button>
+            </div>
+          </td>
+        )}
+      </tr>
+      {editing && (
+        <EditUserDrawer
+          row={row}
+          roles={roles}
+          onClose={() => setEditing(false)}
+          onSaved={() => {
+            setEditing(false);
+            onChanged();
+          }}
+          onError={onError}
+        />
+      )}
+    </>
   );
 }
 
-function NewUserCard({ onCreated }: { onCreated: () => void }) {
+function EditUserDrawer({
+  row,
+  roles,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  row: Row;
+  roles: RoleRow[];
+  onClose: () => void;
+  onSaved: () => void;
+  onError: (e: unknown) => void;
+}) {
+  const [username, setUsername] = useState(row.username);
+  const [name, setName] = useState(row.name);
+  const [email, setEmail] = useState(row.email);
+  const [password, setPassword] = useState('');
+  const [role, setRole] = useState(row.role);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    onError(null);
+    try {
+      const patch: Record<string, unknown> = { username, name, email, role };
+      if (password) patch.password = password;
+      await api.updateUser(row.id, patch);
+      onSaved();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Drawer
+      title={`编辑用户 · ${row.username}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="primary" type="submit" form="edit-user-form" disabled={busy}>
+            {busy ? '保存中…' : '保存'}
+          </button>
+          <button type="button" onClick={onClose}>
+            取消
+          </button>
+        </>
+      }
+    >
+      <form id="edit-user-form" onSubmit={save}>
+        <ErrorBox error={error} />
+        <Field label="用户名">
+          <input value={username} onChange={(e) => setUsername(e.target.value)} style={{ width: '100%' }} required />
+        </Field>
+        <Field label="姓名">
+          <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: '100%' }} required />
+        </Field>
+        <Field label="邮箱">
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            style={{ width: '100%' }}
+            required
+          />
+        </Field>
+        <Field label="角色">
+          <select value={role} onChange={(e) => setRole(e.target.value)} style={{ width: '100%' }}>
+            {roles.map((r) => (
+              <option key={r.name} value={r.name}>
+                {r.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="新密码（留空不改）">
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            style={{ width: '100%' }}
+            autoComplete="new-password"
+          />
+        </Field>
+      </form>
+    </Drawer>
+  );
+}
+
+/**
+ * The built-in `agent` is the sensible default for a new account and sorts
+ * after the system roles, so pick it by name rather than by position.
+ */
+function defaultRole(roles: RoleRow[]): string {
+  return roles.find((r) => r.name === 'agent')?.name ?? roles[0]?.name ?? 'agent';
+}
+
+function NewUserCard({ roles, onCreated }: { roles: RoleRow[]; onCreated: () => void }) {
   const [open, setOpen] = useState(false);
   const [username, setUsername] = useState('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<Role>('agent');
+  const [role, setRole] = useState(defaultRole(roles));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
@@ -218,7 +279,7 @@ function NewUserCard({ onCreated }: { onCreated: () => void }) {
       setName('');
       setEmail('');
       setPassword('');
-      setRole('agent');
+      setRole(defaultRole(roles));
       setOpen(false);
       onCreated();
     } catch (err) {
@@ -239,63 +300,62 @@ function NewUserCard({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <form className="card" onSubmit={submit}>
-      <h2>新建用户</h2>
-      <ErrorBox error={error} />
-      <div className="row">
-        <div style={{ flex: 1, minWidth: 140 }}>
-          <Field label="用户名">
-            <input
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              style={{ width: '100%' }}
-              required
-            />
-          </Field>
-        </div>
-        <div style={{ flex: 1, minWidth: 160 }}>
-          <Field label="姓名">
-            <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: '100%' }} required />
-          </Field>
-        </div>
-        <div style={{ flex: 1, minWidth: 200 }}>
-          <Field label="邮箱">
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              style={{ width: '100%' }}
-              required
-            />
-          </Field>
-        </div>
-        <div style={{ width: 160 }}>
-          <Field label="初始密码">
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={{ width: '100%' }}
-            />
-          </Field>
-        </div>
-        <div style={{ width: 110 }}>
-          <Field label="角色">
-            <select value={role} onChange={(e) => setRole(e.target.value as Role)} style={{ width: '100%' }}>
-              <option value="agent">agent</option>
-              <option value="admin">admin</option>
-            </select>
-          </Field>
-        </div>
-      </div>
-      <div className="row">
-        <button className="primary" type="submit" disabled={busy}>
-          {busy ? '创建中…' : '创建'}
-        </button>
-        <button type="button" onClick={() => setOpen(false)}>
-          取消
-        </button>
-      </div>
-    </form>
+    <Drawer
+      title="新建用户"
+      onClose={() => setOpen(false)}
+      footer={
+        <>
+          <button className="primary" type="submit" form="new-user-form" disabled={busy}>
+            {busy ? '创建中…' : '创建'}
+          </button>
+          <button type="button" onClick={() => setOpen(false)}>
+            取消
+          </button>
+        </>
+      }
+    >
+      <form id="new-user-form" onSubmit={submit}>
+        <ErrorBox error={error} />
+        <Field label="用户名">
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            style={{ width: '100%' }}
+            autoFocus
+            required
+          />
+        </Field>
+        <Field label="姓名">
+          <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: '100%' }} required />
+        </Field>
+        <Field label="邮箱">
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            style={{ width: '100%' }}
+            required
+          />
+        </Field>
+        <Field label="初始密码">
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            style={{ width: '100%' }}
+            autoComplete="new-password"
+          />
+        </Field>
+        <Field label="角色">
+          <select value={role} onChange={(e) => setRole(e.target.value)} style={{ width: '100%' }}>
+            {roles.map((r) => (
+              <option key={r.name} value={r.name}>
+                {r.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </form>
+    </Drawer>
   );
 }

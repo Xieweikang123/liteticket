@@ -64,8 +64,21 @@ of it having compiled. If a claim came from reasoning rather than execution, say
   routes and anything else call into it. Do not put business logic in `src/routes/api.ts`.
 - **Internal notes are excluded at the query level, not filtered in a view,** so they cannot leak
   through an endpoint that forgot to check. Preserve this when touching comments.
-- **Auth is bearer-token only.** A user-bound token carries that user's role, read live per request,
-  so role changes take effect immediately. The last admin cannot be demoted or deleted.
+- **Auth is bearer-token only.** A user-bound token carries its owner's *permissions*, resolved live
+  from the role row on every request, so a role edit applies immediately. An unbound token is a
+  machine credential with every permission.
+- **Permissions are code; roles are data.** The catalog is fixed in `src/db/schema.ts` (`PERMISSIONS`).
+  Routes gate with `can('permission')` from `src/routes/api.ts`, never on a role name. A new
+  permission means: add it to `PERMISSIONS`, check it at a route, mirror it in `web/src/api.ts`'s
+  `Permission` union, and add its Chinese label to `PERMISSION_LABEL` / `ORDER` in
+  `web/src/pages/Roles.tsx` (the latter is a `Record<Permission, string>`, so the omission is a
+  compile error, not a silent gap).
+- **Built-in roles are reconciled from code on boot.** `SYSTEM_ROLES` in `src/auth.ts` is applied by
+  `ensureSystemRoles()` (called in `src/server.ts`) on every start, so a permission added there
+  reaches `admin` without a migration. The API refuses to edit or delete system roles.
+- **Lockout guards are capability-based:** the last user holding `roles.manage` cannot be moved off
+  it, deleted, or have that permission stripped from their role; a role still held by users cannot
+  be deleted.
 - The server holds no rendering logic and no session state.
 
 ### Code style
@@ -84,15 +97,17 @@ of it having compiled. If a claim came from reasoning rather than execution, say
 ```
 src/
   app.ts              route composition and static serving
-  server.ts           bootstrap: seed admin, seed token, listen
-  auth.ts             password hashing, token mint/verify
-  routes/api.ts       the only HTTP surface (JSON)
+  server.ts           bootstrap: seed roles/admin/token, listen
+  auth.ts             password hashing, token mint/verify, SYSTEM_ROLES
+  db/schema.ts        tables + the PERMISSIONS catalog
+  db/index.ts         migrations + BOOTSTRAP_SQL fallback (hand-maintained)
+  routes/api.ts       the only HTTP surface (JSON); can() / role routes
   services/tickets.ts business rules — the single source of truth
 web/
   src/api.ts          typed client, the one place the token is attached
-  src/auth.tsx        session state, validated against /api/auth/me
+  src/auth.tsx        session state + permissions from /api/auth/me
   src/styles.css      all styling; scoped class prefixes per surface
-  src/pages/          tickets, ticket detail, users, tokens, login
+  src/pages/          tickets, ticket detail, users, roles, tokens, login
 ```
 
 ## Verification
@@ -103,10 +118,12 @@ Run what the repo already provides; do not invent a new layer.
 pnpm typecheck                                                          # server
 npx tsc --noEmit -p tsconfig.web.json                                   # client
 pnpm build                                                              # API to dist/, client to web/dist
-node scripts/verify.mjs <token> [baseUrl] [adminUsername] [adminPassword]  # 81 API checks
-node scripts/probe-ui.mjs [baseUrl]                                     # 39 browser checks
+node scripts/verify.mjs <token> [baseUrl] [adminUsername] [adminPassword]  # 106 API checks
+node scripts/probe-ui.mjs [baseUrl]                                     # 43 browser checks
 ```
 
+- `verify.mjs` takes a bearer token; the bootstrap token is printed once on first boot (pin it with
+  `LITETICKET_TOKEN`).
 - `probe-ui.mjs` needs a **running server** and the seeded admin credentials (default
   `admin` / `1`; override with `PROBE_USERNAME` / `PROBE_PASSWORD`).
 - The client is served from `web/dist` by the API server. **A client change requires
@@ -122,3 +139,17 @@ node scripts/probe-ui.mjs [baseUrl]                                     # 39 bro
   generally work where `pnpm dev` does not.
 - `data/*.db-wal` is touched on every request, which is why the API watcher is scoped to
   `--include src/**/*`. Do not widen it.
+
+### Schema changes
+
+Editing `src/db/schema.ts` needs **both** of these, or fresh clones and existing databases drift:
+
+```bash
+pnpm db:generate   # writes drizzle/NNNN_*.sql + meta snapshot
+```
+
+- Also update `BOOTSTRAP_SQL` in `src/db/index.ts` by hand — it is the fallback used when
+  `drizzle/` is absent, and it is not generated.
+- Migrations are applied by hand in `src/db/index.ts` (plain `.sql`, split on
+  `--> statement-breakpoint`), so `drizzle-kit` stays a devDependency. Do not switch to drizzle's
+  runtime migrator.

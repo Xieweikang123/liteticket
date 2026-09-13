@@ -2,8 +2,9 @@
 
 A lightweight, API-first ticketing system. One command to run.
 
-> **Status: v0.1 done.** Ticket CRUD, comments, tags, assignment, user roles, and
-> the REST API all work. Email notification is a non-goal — see below.
+> **Status: v0.1 done.** Ticket CRUD, comments, tags, assignment, custom roles
+> and permissions, and the REST API all work. Email notification is a non-goal —
+> see below.
 
 ## What this is
 
@@ -68,6 +69,7 @@ Everything here is done.
 - [x] Assignment to a user
 - [x] User management (create / edit / delete)
 - [x] Login with roles — admin / agent
+- [x] Custom roles and a fixed permission catalog
 - [x] Comments — internal note and public reply
 - [x] REST API with bearer-token auth
 - [x] Self-service API tokens (mint and revoke your own)
@@ -162,16 +164,24 @@ hard refresh.
 ## API
 
 Every route below requires `Authorization: Bearer <token>`, except `/api/health`
-and `/api/auth/login`. A token bound to a user carries that user's role, read
-live on each request — so a demotion takes effect immediately. An unbound token
-is a machine credential and carries admin rights. Routes marked **admin** reject
-tokens below the admin role.
+and `/api/auth/login`. A token bound to a user carries that user's role's
+permissions, read live on each request — so a role edit takes effect
+immediately. An unbound token is a machine credential and carries every
+permission. Routes marked with a permission reject tokens that lack it.
+
+The permission catalog is fixed in code (`tickets.read`, `tickets.write`,
+`tickets.delete`, `users.read`, `users.manage`, `roles.manage`). Roles are data:
+you can create, rename, and re-scope them, but you cannot invent a permission
+the server does not check. The built-in `admin` and `agent` roles are seeded
+from code on every boot and cannot be edited or deleted, which is what keeps an
+upgrade from locking the instance out.
 
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/health` | Public |
 | `POST` | `/api/auth/login` | Public; returns a user-bound token |
 | `GET` | `/api/auth/me` | Who the caller is; used to validate a stored token |
+| `POST` | `/api/auth/password` | Change **your own** password (`currentPassword`, `newPassword`); revokes your tokens |
 | `GET` | `/api/tickets` | `status`, `assigneeId`, `tag`, `q`, `limit`, `offset` |
 | `GET` | `/api/tickets/:id` | `?includeInternal=true` to include internal notes |
 | `POST` | `/api/tickets` | `subject`, `requesterEmail` required |
@@ -179,17 +189,24 @@ tokens below the admin role.
 | `DELETE` | `/api/tickets/:id` | **admin** |
 | `GET` | `/api/tickets/:id/comments` | internal notes hidden unless requested |
 | `POST` | `/api/tickets/:id/comments` | `isInternal: true` for an internal note |
-| `GET` | `/api/users` · `/api/users/:id` | |
-| `POST` | `/api/users` | **admin**; `username`, `email`, `name`, optional `role`, `password` |
-| `PATCH` | `/api/users/:id` | **admin**; `username`, `email`, `name`, `role`, `password` |
-| `DELETE` | `/api/users/:id` | **admin**; unassigns their tickets rather than deleting history |
+| `GET` | `/api/users` · `/api/users/:id` | `users.read` |
+| `POST` | `/api/users` | `users.manage`; `username`, `email`, `name`, optional `role`, `password` |
+| `PATCH` | `/api/users/:id` | `users.manage`; `username`, `email`, `name`, `role`, `password` |
+| `DELETE` | `/api/users/:id` | `users.manage`; unassigns their tickets rather than deleting history |
+| `GET` | `/api/roles` | `users.read`; the role list |
+| `GET` | `/api/permissions` | `users.read`; the fixed permission catalog |
+| `POST` | `/api/roles` | `roles.manage`; `name`, `label`, `permissions[]` |
+| `PATCH` | `/api/roles/:id` | `roles.manage`; `label`, `description`, `permissions[]` |
+| `DELETE` | `/api/roles/:id` | `roles.manage`; only when no user holds it |
 | `GET` | `/api/tokens` | your own tokens (never the secret) |
 | `POST` | `/api/tokens` | mint one; the plaintext is returned **once** |
 | `DELETE` | `/api/tokens/:id` | revoke one of your own |
 | `GET` | `/api/tags` · `/api/stats` | |
 
-The last admin cannot be demoted or deleted, so the instance cannot lock itself
-out.
+The last user holding `roles.manage` cannot be moved off that permission, and a
+role still assigned to users cannot be deleted, so the instance cannot lock
+itself out. Built-in roles are reconciled from code on boot; a new permission is
+granted to `admin` automatically.
 
 Internal notes are excluded at the query level, not filtered in a view, so they cannot leak through
 an endpoint that forgot to check.
@@ -231,8 +248,8 @@ src/
   services/tickets.ts business rules — the single source of truth
 web/
   src/api.ts          typed client, the one place the token is attached
-  src/auth.tsx        session state, validated against /api/auth/me
-  src/pages/          tickets, ticket detail, users, tokens, login
+  src/auth.tsx        session state and effective permissions, from /api/auth/me
+  src/pages/          tickets, ticket detail, users, roles, tokens, login
 ```
 
 ## Contributing

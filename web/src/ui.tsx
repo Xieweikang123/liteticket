@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import type { ReactNode } from 'react';
 
 export const STATUS_LABEL: Record<string, string> = {
@@ -65,6 +66,60 @@ export function Field({ label, children }: { label: string; children: ReactNode 
     <div className="field">
       <label>{label}</label>
       {children}
+    </div>
+  );
+}
+
+/**
+ * A right-hand sheet for editing one record.
+ *
+ * Editing used to happen inside the table row, which forced every form into a
+ * single line of cells — fine for two fields, unreadable at five. A drawer
+ * gives the form its own column instead, and the list stays visible behind it
+ * so the user keeps the context of what they are editing.
+ *
+ * It is deliberately not a modal: the overlay is a scrim you can click away,
+ * and Escape closes. The panel only animates on open — unmounting on close
+ * would need an exit animation the reduced-motion path would have to undo.
+ */
+export function Drawer({
+  title,
+  onClose,
+  children,
+  footer,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+  footer?: ReactNode;
+}) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    document.addEventListener('keydown', onKey);
+    // The page behind must not scroll while the sheet owns the viewport.
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = previous;
+    };
+  }, [onClose]);
+
+  return (
+    <div className="drawer-layer">
+      <div className="drawer-scrim" onClick={onClose} aria-hidden="true" />
+      <aside className="drawer" role="dialog" aria-modal="true" aria-label={title}>
+        <header className="drawer-head">
+          <h2>{title}</h2>
+          <button className="drawer-x" onClick={onClose} aria-label="关闭">
+            ×
+          </button>
+        </header>
+        <div className="drawer-body">{children}</div>
+        {footer && <footer className="drawer-foot">{footer}</footer>}
+      </aside>
     </div>
   );
 }

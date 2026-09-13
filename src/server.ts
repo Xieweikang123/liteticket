@@ -2,13 +2,21 @@ import { serve } from '@hono/node-server';
 import { eq } from 'drizzle-orm';
 import { loadConfig } from './config.ts';
 import { createApp } from './app.ts';
-import { ensureBootstrapToken, ensureUser, hashPassword } from './auth.ts';
+import { ensureBootstrapToken, ensureSystemRoles, ensureUser, hashPassword, purgeExpiredTokens } from './auth.ts';
 import { getDb } from './db/index.ts';
 import { users } from './db/schema.ts';
 
 const config = loadConfig();
 const app = await createApp(config.dbFile);
 const { db } = getDb();
+
+// Roles before users: a user's permissions resolve against this table, and the
+// seed admin below is assigned the `admin` role by name.
+await ensureSystemRoles(db);
+
+// A restart is a natural cleanup point for sessions that expired while the
+// server was down; login sweeps again, so the table stays bounded either way.
+await purgeExpiredTokens(db);
 
 /**
  * Seed the first admin.

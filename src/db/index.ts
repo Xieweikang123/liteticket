@@ -28,10 +28,21 @@ function migrationsDir(): string | null {
 
 /**
  * The fallback schema, used when `drizzle/` is absent (e.g. a fresh git clone
- * before `pnpm db:generate`). Kept in sync with src/db/schema.ts by hand â€” it
+ * before `pnpm db:generate`). Kept in sync with src/db/schema.ts by hand â€?it
  * is the safety net, not the source of truth.
  */
 const BOOTSTRAP_SQL = [
+  `CREATE TABLE IF NOT EXISTS roles (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     name TEXT NOT NULL,
+     label TEXT NOT NULL,
+     description TEXT,
+     permissions TEXT NOT NULL DEFAULT '[]',
+     is_system INTEGER NOT NULL DEFAULT 0,
+     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS roles_name_unique ON roles (name)`,
+
   `CREATE TABLE IF NOT EXISTS users (
      id INTEGER PRIMARY KEY AUTOINCREMENT,
      username TEXT NOT NULL,
@@ -39,7 +50,8 @@ const BOOTSTRAP_SQL = [
      name TEXT NOT NULL,
      role TEXT NOT NULL DEFAULT 'agent',
      password_hash TEXT,
-     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+
+     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
    )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users (username)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users (email)`,
@@ -47,16 +59,18 @@ const BOOTSTRAP_SQL = [
   `CREATE TABLE IF NOT EXISTS settings (
      key TEXT PRIMARY KEY,
      value TEXT NOT NULL,
-     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
    )`,
 
   `CREATE TABLE IF NOT EXISTS tokens (
      id INTEGER PRIMARY KEY AUTOINCREMENT,
      name TEXT NOT NULL,
      token_hash TEXT NOT NULL,
+     kind TEXT NOT NULL DEFAULT 'api',
      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-     last_used_at TEXT
+     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+     last_used_at TEXT,
+     expires_at TEXT
    )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS tokens_hash_unique ON tokens (token_hash)`,
 
@@ -69,8 +83,8 @@ const BOOTSTRAP_SQL = [
      requester_email TEXT NOT NULL,
      requester_name TEXT,
      assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
      closed_at TEXT
    )`,
   `CREATE INDEX IF NOT EXISTS tickets_status_idx ON tickets (status)`,
@@ -84,7 +98,7 @@ const BOOTSTRAP_SQL = [
      author_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
      author_email TEXT,
      is_internal INTEGER NOT NULL DEFAULT 0,
-     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
    )`,
   `CREATE INDEX IF NOT EXISTS comments_ticket_idx ON comments (ticket_id)`,
 
@@ -117,7 +131,7 @@ async function migrate(client: Client): Promise<void> {
   await client.execute(
     `CREATE TABLE IF NOT EXISTS __migrations (
        name TEXT PRIMARY KEY,
-       applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+       applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
      )`,
   );
 
@@ -198,7 +212,7 @@ export async function initDb(file?: string): Promise<ReturnType<typeof buildDb>>
 /** Accessor for code paths that run after initDb() has resolved. */
 export function getDb(): ReturnType<typeof buildDb> {
   if (!singleton) {
-    throw new Error('database not initialized â€” call initDb() first');
+    throw new Error('database not initialized â€?call initDb() first');
   }
   return singleton;
 }

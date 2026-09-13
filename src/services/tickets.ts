@@ -1,8 +1,9 @@
 import { and, desc, eq, inArray, like, or, sql } from 'drizzle-orm';
 import type { Db } from '../db/index.ts';
-import { comments, tags, ticketTags, tickets, tokens, users } from '../db/schema.ts';
-import type { Comment, Ticket, User } from '../db/schema.ts';
+import { comments, roles, tags, ticketTags, tickets, tokens, users } from '../db/schema.ts';
+import type { Comment, Permission, Role, Ticket, User } from '../db/schema.ts';
 import { hashPassword } from '../auth.ts';
+import { nowIso } from '../time.ts';
 
 export interface TicketWithMeta extends Ticket {
   assigneeName: string | null;
@@ -127,7 +128,7 @@ export interface CreateTicketInput {
 }
 
 export async function createTicket(db: Db, input: CreateTicketInput): Promise<TicketWithMeta> {
-  const now = new Date().toISOString();
+  const now = nowIso();
   const created = (
     await db
       .insert(tickets)
@@ -166,7 +167,7 @@ export async function updateTicket(
   const existing = (await db.select().from(tickets).where(eq(tickets.id, id)).limit(1))[0];
   if (!existing) return null;
 
-  const now = new Date().toISOString();
+  const now = nowIso();
   const values: Record<string, unknown> = { updatedAt: now };
 
   if (patch.subject !== undefined) values.subject = patch.subject;
@@ -238,7 +239,7 @@ export async function addComment(
   )[0];
   if (!ticket) return null;
 
-  const now = new Date().toISOString();
+  const now = nowIso();
   const created = (
     await db
       .insert(comments)
@@ -313,7 +314,8 @@ export interface CreateUserInput {
   username: string;
   email: string;
   name: string;
-  role?: 'admin' | 'agent';
+  /** A role name; falls back to `agent` when omitted. */
+  role?: string;
   password?: string;
 }
 
@@ -345,7 +347,8 @@ export interface UpdateUserInput {
   username?: string;
   email?: string;
   name?: string;
-  role?: 'admin' | 'agent';
+  /** A role name; validated against the roles table by the caller. */
+  role?: string;
   password?: string;
 }
 
@@ -399,13 +402,112 @@ export async function deleteUser(db: Db, id: number): Promise<boolean> {
   return true;
 }
 
-/** Count admins, so the last one cannot be demoted or deleted by mistake. */
-export async function countAdmins(db: Db, excludeId?: number): Promise<number> {
+/**
+ * Count users who can administer roles, so the last one cannot be demoted,
+ * deleted, or have their role stripped of `roles.manage`. This is the lockout
+ * guard — losing the final role manager would leave no one able to grant it
+ * back.
+ *
+ * Permissions live in a JSON column, so the filter happens in JS rather than
+ * SQL; the users table is small and this only runs on a privileged write.
+ */
+export async function countRoleManagers(db: Db, excludeId?: number): Promise<number> {
   const rows = await db
-    .select({ id: users.id })
+    .select({ id: users.id, permissions: roles.permissions })
     .from(users)
-    .where(eq(users.role, 'admin'));
-  return rows.filter((r) => r.id !== excludeId).length;
+    .innerJoin(roles, eq(roles.name, users.role));
+  return rows.filter(
+    (r) => r.id !== excludeId && r.permissions.includes('roles.manage'),
+  ).length;
+}
+
+// ---- roles ----------------------------------------------------------------
+
+export async function listRoles(db: Db): Promise<Role[]> {
+  return db.select().from(roles).orderBy(desc(roles.isSystem), roles.name);
+}
+
+export async function getRole(db: Db, id: number): Promise<Role | null> {
+  const rows = await db.select().from(roles).where(eq(roles.id, id)).limit(1);
+  return rows[0] ?? null;
+}
+
+export async function getRoleByName(db: Db, name: string): Promise<Role | null> {
+  const rows = await db.select().from(roles).where(eq(roles.name, name)).limit(1);
+  return rows[0] ?? null;
+}
+
+/** Users currently assigned a role, for the "role still in use" guards. */
+export async function listUsersByRole(db: Db, name: string): Promise<PublicUser[]> {
+  return db.select(PUBLIC_USER_COLUMNS).from(users).where(eq(users.role, name));
+}
+
+/**
+ * Count role managers whose role is *not* `name`. Used when a role is about to
+ * lose `roles.manage`: if no manager exists outside it, the edit would strand
+ * the instance with no one able to grant the permission back.
+ */
+export async function countRoleManagersExcludingRole(db: Db, name: string): Promise<number> {
+  const rows = await db
+    .select({ role: users.role, permissions: roles.permissions })
+    .from(users)
+    .innerJoin(roles, eq(roles.name, users.role));
+  return rows.filter(
+    (r) => r.role !== name && r.permissions.includes('roles.manage'),
+  ).length;
+}
+
+export interface CreateRoleInput {
+  name: string;
+  label: string;
+  description?: string | null;
+  permissions: Permission[];
+}
+
+export async function createRole(db: Db, input: CreateRoleInput): Promise<Role> {
+  return (
+    await db
+      .insert(roles)
+      .values({
+        name: input.name,
+        label: input.label,
+        description: input.description ?? null,
+        permissions: input.permissions,
+      })
+      .returning()
+  )[0]!;
+}
+
+export interface UpdateRoleInput {
+  label?: string;
+  description?: string | null;
+  permissions?: Permission[];
+}
+
+export async function updateRole(
+  db: Db,
+  id: number,
+  patch: UpdateRoleInput,
+): Promise<Role | null> {
+  const existing = await getRole(db, id);
+  if (!existing) return null;
+
+  const values: Record<string, unknown> = {};
+  if (patch.label !== undefined) values.label = patch.label;
+  if (patch.description !== undefined) values.description = patch.description;
+  if (patch.permissions !== undefined) values.permissions = patch.permissions;
+
+  if (Object.keys(values).length > 0) {
+    await db.update(roles).set(values).where(eq(roles.id, id));
+  }
+  return getRole(db, id);
+}
+
+export async function deleteRole(db: Db, id: number): Promise<boolean> {
+  const existing = await getRole(db, id);
+  if (!existing) return false;
+  await db.delete(roles).where(eq(roles.id, id));
+  return true;
 }
 
 export async function listTags(db: Db) {

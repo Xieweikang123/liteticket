@@ -475,6 +475,68 @@ let userId;
 
   if (agentId) await api(`/api/users/${agentId}`, { method: 'DELETE', headers: auth });
 }
+
+// ---- self-service password -----------------------------------------------
+{
+  // A non-admin must be able to rotate their own password; `PATCH /users/:id`
+  // is gated on users.manage, which the built-in agent role lacks.
+  const created = await api('/api/users', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({
+      username: 'selfpw-agent',
+      email: 'selfpw@example.com',
+      name: '自助改密',
+      role: 'agent',
+      password: 'initial',
+    }),
+  });
+  const selfId = created.body?.id;
+  check('self-service password user created', created.status === 201, `status ${created.status}`);
+
+  const ownToken = await login('selfpw-agent', 'initial');
+  check('self-service user can log in', Boolean(ownToken));
+
+  if (ownToken) {
+    const wrong = await api('/api/auth/password', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownToken}`, 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ currentPassword: 'not-it', newPassword: 'next' }),
+    });
+    check('wrong current password rejected (401)', wrong.status === 401, `status ${wrong.status}`);
+
+    const denied = await api(`/api/users/${selfId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${ownToken}`, 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ password: 'next' }),
+    });
+    check('agent still cannot patch a user password (403)', denied.status === 403, `status ${denied.status}`);
+
+    const ok = await api('/api/auth/password', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownToken}`, 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ currentPassword: 'initial', newPassword: 'rotated-self' }),
+    });
+    check('self-service password change succeeds (204)', ok.status === 204, `status ${ok.status}`);
+
+    const stale = await api('/api/auth/me', { headers: { Authorization: `Bearer ${ownToken}` } });
+    check('self-service change revokes the old token', stale.status === 401, `status ${stale.status}`);
+
+    check('old password no longer works', (await login('selfpw-agent', 'initial')) === null);
+    check('new password works', Boolean(await login('selfpw-agent', 'rotated-self')));
+  }
+
+  if (selfId) await api(`/api/users/${selfId}`, { method: 'DELETE', headers: auth });
+}
+{
+  // A machine token has no owner, so there is no password to change.
+  const r = await api('/api/auth/password', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ currentPassword: 'x', newPassword: 'y' }),
+  });
+  check('unbound machine token cannot change a password (400)', r.status === 400, `status ${r.status}`);
+}
 {
   // The last admin cannot be removed out from under the system.
   const list = await api('/api/users', { headers: auth });
@@ -489,6 +551,167 @@ let userId;
   } else {
     check('last admin cannot be demoted', false, 'seed admin not found');
   }
+}
+
+// ---- roles (RBAC) --------------------------------------------------------
+{
+  const r = await api('/api/roles', { headers: auth });
+  check('roles list works', r.status === 200 && Array.isArray(r.body?.items), `status ${r.status}`);
+  const admin = r.body?.items?.find((x) => x.name === 'admin');
+  check('built-in admin role is seeded', Boolean(admin?.isSystem), JSON.stringify(admin?.name));
+  check('admin role carries every permission', admin?.permissions?.includes('roles.manage'));
+
+  const perms = await api('/api/permissions', { headers: auth });
+  check('permissions catalog is exposed', perms.status === 200 && perms.body?.items?.includes('tickets.read'));
+}
+{
+  const r = await api('/api/roles', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ name: 'bad role', label: 'x', permissions: [] }),
+  });
+  check('invalid role name rejected with 422', r.status === 422, `status ${r.status}`);
+}
+let viewerRoleId;
+{
+  const r = await api('/api/roles', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({
+      name: 'viewer',
+      label: '只读',
+      permissions: ['tickets.read'],
+    }),
+  });
+  viewerRoleId = r.body?.id;
+  check('custom role created with 201', r.status === 201, `status ${r.status}`);
+  check('custom role is not system', r.body?.isSystem === false);
+  check('custom role permissions roundtrip', JSON.stringify(r.body?.permissions) === '["tickets.read"]');
+}
+{
+  const r = await api('/api/roles', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ name: 'viewer', label: '重复', permissions: [] }),
+  });
+  check('duplicate role name rejected with 409', r.status === 409, `status ${r.status}`);
+}
+{
+  const r = await api('/api/roles', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ name: 'hacker', label: 'x', permissions: ['files.read'] }),
+  });
+  check('unknown permission rejected with 422', r.status === 422, `status ${r.status}`);
+}
+{
+  const r = await api(`/api/roles/${viewerRoleId}`, {
+    method: 'PATCH',
+    headers: jsonAuth,
+    body: JSON.stringify({ label: '只读用户', permissions: ['tickets.read', 'tickets.write'] }),
+  });
+  check('custom role can be edited', r.status === 200 && r.body?.label === '只读用户', `status ${r.status}`);
+}
+// A user on a custom role inherits exactly its permissions, live.
+{
+  const created = await api('/api/users', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({
+      username: 'viewer-user',
+      email: 'viewer@example.com',
+      name: '只读用户',
+      role: 'viewer',
+      password: 'viewerpass',
+    }),
+  });
+  const viewerId = created.body?.id;
+  check('user can be created on a custom role', created.status === 201, `status ${created.status}`);
+
+  const viewerToken = await login('viewer-user', 'viewerpass');
+  check('custom-role user can log in', Boolean(viewerToken));
+  if (viewerToken) {
+    const me = await api('/api/auth/me', { headers: { Authorization: `Bearer ${viewerToken}` } });
+    check('custom role reported on /auth/me', me.body?.role === 'viewer', `role ${me.body?.role}`);
+    check(
+      'effective permissions come from the role',
+      JSON.stringify(me.body?.permissions) === '["tickets.read","tickets.write"]',
+      JSON.stringify(me.body?.permissions),
+    );
+
+    const read = await api('/api/tickets', { headers: { Authorization: `Bearer ${viewerToken}` } });
+    check('custom role can read tickets', read.status === 200, `status ${read.status}`);
+
+    const write = await api(`/api/tickets/${ticketId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${viewerToken}`, 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ priority: 'low' }),
+    });
+    check('custom role can write tickets', write.status === 200, `status ${write.status}`);
+
+    const del = await api(`/api/tickets/${ticketId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${viewerToken}` },
+    });
+    check('custom role cannot delete tickets (403)', del.status === 403, `status ${del.status}`);
+
+    const roles = await api('/api/roles', { headers: { Authorization: `Bearer ${viewerToken}` } });
+    check('custom role cannot manage roles (403)', roles.status === 403, `status ${roles.status}`);
+  }
+
+  // Editing the role's permissions changes access on the next request — no
+  // re-login, because permissions are resolved live.
+  await api(`/api/roles/${viewerRoleId}`, {
+    method: 'PATCH',
+    headers: jsonAuth,
+    body: JSON.stringify({ permissions: ['tickets.read'] }),
+  });
+  if (viewerToken) {
+    const after = await api(`/api/tickets/${ticketId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${viewerToken}`, 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ priority: 'normal' }),
+    });
+    check('revoking a permission applies to an existing token immediately', after.status === 403, `status ${after.status}`);
+  }
+
+  if (viewerId) await api(`/api/users/${viewerId}`, { method: 'DELETE', headers: auth });
+}
+{
+  // A role still held by a user cannot be deleted.
+  const created = await api('/api/users', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ username: 'temp-role-user', email: 'temp-role@example.com', name: 'x', role: 'viewer' }),
+  });
+  const tempId = created.body?.id;
+  const del = await api(`/api/roles/${viewerRoleId}`, { method: 'DELETE', headers: auth });
+  check('role in use cannot be deleted (409)', del.status === 409, `status ${del.status}`);
+
+  if (tempId) await api(`/api/users/${tempId}`, { method: 'DELETE', headers: auth });
+  const ok = await api(`/api/roles/${viewerRoleId}`, { method: 'DELETE', headers: auth });
+  check('unused custom role can be deleted', ok.status === 204, `status ${ok.status}`);
+}
+{
+  // System roles are code-owned: the API refuses to edit or delete them.
+  const list = await api('/api/roles', { headers: auth });
+  const adminRole = list.body?.items?.find((x) => x.name === 'admin');
+  const edit = await api(`/api/roles/${adminRole?.id}`, {
+    method: 'PATCH',
+    headers: jsonAuth,
+    body: JSON.stringify({ label: 'hax' }),
+  });
+  check('system role cannot be edited (409)', edit.status === 409, `status ${edit.status}`);
+  const del = await api(`/api/roles/${adminRole?.id}`, { method: 'DELETE', headers: auth });
+  check('system role cannot be deleted (409)', del.status === 409, `status ${del.status}`);
+}
+{
+  const r = await api('/api/users', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ username: 'badrole', email: 'badrole@example.com', name: 'x', role: 'nope' }),
+  });
+  check('creating a user with an unknown role is rejected (422)', r.status === 422, `status ${r.status}`);
 }
 
 // ---- delete --------------------------------------------------------------

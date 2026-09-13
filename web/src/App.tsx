@@ -1,11 +1,13 @@
 import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { useAuth, isAdmin } from './auth.tsx';
+import { useAuth, can } from './auth.tsx';
 import { Loading } from './ui.tsx';
 import { LoginPage } from './pages/Login.tsx';
 import { TicketListPage } from './pages/TicketList.tsx';
 import { TicketDetailPage } from './pages/TicketDetail.tsx';
 import { UsersPage } from './pages/Users.tsx';
+import { RolesPage } from './pages/Roles.tsx';
 import { TokensPage } from './pages/Tokens.tsx';
+import { AccountPage } from './pages/Account.tsx';
 
 /**
  * A nav tab. React Router already appends `active` to the className it is
@@ -21,8 +23,9 @@ function Tab({ to, end, children }: { to: string; end?: boolean; children: React
 }
 
 function TopBar() {
-  const { user, logout } = useAuth();
-  const admin = isAdmin(user?.role);
+  const { user, permissions, logout } = useAuth();
+  const admin = can(permissions, 'roles.manage');
+  const canReadUsers = can(permissions, 'users.read');
   return (
     <header className="topbar">
       <span className="brand">liteticket</span>
@@ -30,8 +33,10 @@ function TopBar() {
         <Tab to="/" end>
           工单
         </Tab>
-        {admin && <Tab to="/users">用户</Tab>}
+        {canReadUsers && <Tab to="/users">用户</Tab>}
+        {admin && <Tab to="/roles">角色</Tab>}
         <Tab to="/tokens">我的令牌</Tab>
+        <Tab to="/account">账号</Tab>
       </nav>
       <span className="who">
         {user ? (
@@ -108,10 +113,26 @@ export function App() {
             }
           />
           <Route
+            path="/roles"
+            element={
+              <RequireAuth>
+                <RolesPage />
+              </RequireAuth>
+            }
+          />
+          <Route
             path="/tokens"
             element={
               <RequireAuth>
                 <TokensPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/account"
+            element={
+              <RequireAuth>
+                <AccountPage />
               </RequireAuth>
             }
           />

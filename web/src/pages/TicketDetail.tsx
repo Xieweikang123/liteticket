@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api.ts';
 import type { AuthUser, Comment, Ticket } from '../api.ts';
-import { useAuth, isAdmin } from '../auth.tsx';
+import { useAuth, can } from '../auth.tsx';
 import {
   Empty,
   ErrorBox,
@@ -19,7 +19,7 @@ export function TicketDetailPage() {
   const { id: rawId } = useParams();
   const id = Number(rawId);
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { permissions } = useAuth();
 
   const [ticket, setTicket] = useState<Full | null>(null);
   const [users, setUsers] = useState<AuthUser[]>([]);
@@ -37,7 +37,13 @@ export function TicketDetailPage() {
       if (opts.initial) setLoading(true);
       setError(null);
       try {
-        const [t, u] = await Promise.all([api.getTicket(id), api.listUsers()]);
+        // The assignee picker needs users, but a role may be able to work
+        // tickets without being able to list users. Fetch separately so a
+        // denied user list leaves the ticket — and the reply form — usable.
+        const [t, u] = await Promise.all([
+          api.getTicket(id),
+          can(permissions, 'users.read') ? api.listUsers() : Promise.resolve({ items: [] }),
+        ]);
         setTicket(t);
         setUsers(u.items);
       } catch (err) {
@@ -47,7 +53,7 @@ export function TicketDetailPage() {
         if (opts.initial) setLoading(false);
       }
     },
-    [id],
+    [id, permissions],
   );
 
   useEffect(() => {
@@ -166,7 +172,7 @@ export function TicketDetailPage() {
               </select>
             </Field>
           </div>
-          {isAdmin(user?.role) && (
+          {can(permissions, 'tickets.delete') && (
             <button className="danger" onClick={remove} style={{ marginTop: 18 }}>
               删除工单
             </button>

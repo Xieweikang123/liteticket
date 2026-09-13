@@ -54,7 +54,7 @@ export function TokensPage() {
   }
 
   async function revoke(id: number) {
-    if (!confirm('吊销这个 token？使用它的程序会立即失去访问权限。')) return;
+    if (!confirm('吊销这个令牌？使用它的程序会立即失去访问权限。')) return;
     setError(null);
     try {
       await api.revokeToken(id);
@@ -68,7 +68,7 @@ export function TokensPage() {
     <>
       {fresh && (
         <div className="card">
-          <h2>新 token（只显示这一次）</h2>
+          <h2>新令牌（只显示这一次）</h2>
           <p className="muted small" style={{ marginTop: 0 }}>
             请立刻复制保存。服务端只存哈希，关闭后无法再次查看。
           </p>
@@ -88,7 +88,7 @@ export function TokensPage() {
       )}
 
       <form className="card" onSubmit={create}>
-        <h2>签发新 token</h2>
+        <h2>签发新令牌</h2>
         <ErrorBox error={error} />
         <div className="row">
           <div style={{ flex: 1, minWidth: 220 }}>
@@ -112,7 +112,7 @@ export function TokensPage() {
         {loading ? (
           <Loading />
         ) : items.length === 0 ? (
-          <Empty label="还没有属于你的 token" />
+          <Empty label="还没有属于你的令牌" />
         ) : (
           <table>
             <thead>
