@@ -99,13 +99,20 @@ export async function verifyToken(db: Db, presented: string): Promise<AuthContex
 }
 
 /**
- * Look up a user by email along with the stored password hash, for login.
- * Returns null when the email is unknown.
+ * Look up a user by username along with the stored password hash, for login.
+ * Returns null when the username is unknown.
  */
-export async function findUserForLogin(db: Db, email: string) {
-  const row = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
+export async function findUserForLogin(db: Db, username: string) {
+  const row = (await db.select().from(users).where(eq(users.username, username)).limit(1))[0];
   if (!row) return null;
-  return { id: row.id, email: row.email, name: row.name, role: row.role, passwordHash: row.passwordHash };
+  return {
+    id: row.id,
+    username: row.username,
+    email: row.email,
+    name: row.name,
+    role: row.role,
+    passwordHash: row.passwordHash,
+  };
 }
 
 /**
@@ -165,11 +172,18 @@ export async function ensureBootstrapToken(db: Db, preset?: string): Promise<str
   return createToken(db, 'bootstrap', null, preset);
 }
 
-/** Idempotent: makes sure at least one user exists so tickets can be assigned. */
-export async function ensureUser(db: Db, email: string, name: string): Promise<number> {
-  const existing = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
+/**
+ * Idempotent: makes sure at least one user exists so tickets can be assigned.
+ *
+ * Matched on username, which is the login identifier — an existing install
+ * whose seeded admin has a different email must not spawn a second account.
+ * `email` is a contact field and is not required to be unique here; that
+ * constraint is enforced at the user-management API instead.
+ */
+export async function ensureUser(db: Db, username: string, email: string, name: string): Promise<number> {
+  const existing = (await db.select().from(users).where(eq(users.username, username)).limit(1))[0];
   if (existing) return existing.id;
 
-  const inserted = (await db.insert(users).values({ email, name }).returning())[0]!;
+  const inserted = (await db.insert(users).values({ username, email, name }).returning())[0]!;
   return inserted.id;
 }

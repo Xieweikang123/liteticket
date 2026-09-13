@@ -107,10 +107,10 @@ there is one origin and no CORS configuration.
 On Windows, `start.bat` does the same thing on a double-click.
 
 The web UI requires a login. On first boot an admin is seeded from
-`LITETICKET_ADMIN_EMAIL` / `LITETICKET_ADMIN_PASSWORD` (default
-`admin@localhost` / `1`); the banner prints it once. **Change the password, and
-set the env var, before exposing the server on a network.** Changing a password
-revokes every token issued under the old one.
+`LITETICKET_ADMIN_USERNAME` / `LITETICKET_ADMIN_PASSWORD` (default
+`admin` / `1`); the banner prints it once. **Change the password, and set the
+env var, before exposing the server on a network.** Changing a password revokes
+every token issued under the old one.
 
 The API accepts a bearer token, and nothing else:
 
@@ -125,7 +125,7 @@ role:
 ```bash
 curl -X POST http://127.0.0.1:8787/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"admin@localhost","password":"1"}'
+  -d '{"username":"admin","password":"1"}'
 ```
 
 Tokens for scripts are also available from **我的 Token** in the UI, so nobody
@@ -155,7 +155,8 @@ hard refresh.
 | `HOST` | `127.0.0.1` | Bind address; set `0.0.0.0` to expose on the LAN |
 | `LITETICKET_DB` | `./data/liteticket.db` | SQLite file path |
 | `LITETICKET_TOKEN` | generated | Seed a known bootstrap token instead of a generated one |
-| `LITETICKET_ADMIN_EMAIL` | `admin@localhost` | Seed admin's email |
+| `LITETICKET_ADMIN_USERNAME` | `admin` | Seed admin's login username |
+| `LITETICKET_ADMIN_EMAIL` | `admin@localhost` | Seed admin's email (contact field) |
 | `LITETICKET_ADMIN_PASSWORD` | `1` | Seed admin's password — **set this in production** |
 
 ## API
@@ -179,8 +180,8 @@ tokens below the admin role.
 | `GET` | `/api/tickets/:id/comments` | internal notes hidden unless requested |
 | `POST` | `/api/tickets/:id/comments` | `isInternal: true` for an internal note |
 | `GET` | `/api/users` · `/api/users/:id` | |
-| `POST` | `/api/users` | **admin**; `email`, `name`, optional `role`, `password` |
-| `PATCH` | `/api/users/:id` | **admin**; `email`, `name`, `role`, `password` |
+| `POST` | `/api/users` | **admin**; `username`, `email`, `name`, optional `role`, `password` |
+| `PATCH` | `/api/users/:id` | **admin**; `username`, `email`, `name`, `role`, `password` |
 | `DELETE` | `/api/users/:id` | **admin**; unassigns their tickets rather than deleting history |
 | `GET` | `/api/tokens` | your own tokens (never the secret) |
 | `POST` | `/api/tokens` | mint one; the plaintext is returned **once** |
@@ -208,14 +209,14 @@ Verification runs at two levels, because HTTP checks cannot catch a client that
 renders a blank page:
 
 ```bash
-node scripts/verify.mjs <token> [baseUrl] [adminEmail] [adminPassword]   # 78 API checks
+node scripts/verify.mjs <token> [baseUrl] [adminUsername] [adminPassword]   # 81 API checks
 node scripts/probe-ui.mjs [baseUrl]                                      # 39 browser checks
 ```
 
 `probe-ui.mjs` drives a real browser (Playwright, using the installed Chrome) through login, ticket
 creation, status changes, replies, internal notes, token minting, the agent role, logout, and deep
-links. It needs the seeded admin's credentials; set `PROBE_EMAIL` / `PROBE_PASSWORD` when they are
-not the defaults (`admin@localhost` / `1`).
+links. It needs the seeded admin's credentials; set `PROBE_USERNAME` / `PROBE_PASSWORD` when they
+are not the defaults (`admin` / `1`).
 
 ### Layout
 

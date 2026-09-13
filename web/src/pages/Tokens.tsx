@@ -4,11 +4,13 @@ import type { TokenRow } from '../api.ts';
 import { Empty, ErrorBox, Field, Loading, formatTime } from '../ui.tsx';
 
 /**
- * Self-service API tokens.
+ * Self-service API tokens (「令牌」 in the Chinese UI, to match the wording the
+ * login screen already used).
  *
- * Before this page existed, a logged-in user had no way to obtain an API
- * token: the only one ever minted was the bootstrap token printed to the
- * server console on first boot. Now a user can mint and revoke their own.
+ * Before this page existed, a logged-in user had no way to obtain a long-lived
+ * API credential: logging in mints a token, but it is named after the date,
+ * lives in the browser, and is indistinguishable from any other session. This
+ * page is for the other kind — named, long-lived, revocable, meant for scripts.
  */
 export function TokensPage() {
   const [items, setItems] = useState<TokenRow[]>([]);

@@ -267,6 +267,7 @@ export type PublicUser = Omit<User, 'passwordHash'>;
 
 const PUBLIC_USER_COLUMNS = {
   id: users.id,
+  username: users.username,
   email: users.email,
   name: users.name,
   role: users.role,
@@ -283,8 +284,8 @@ export async function getUser(db: Db, id: number): Promise<PublicUser | null> {
 }
 
 /** Full row including the password hash — for authentication only. */
-export async function getUserForAuth(db: Db, email: string) {
-  const rows = await db.select().from(users).where(eq(users.email, email)).limit(1);
+export async function getUserForAuth(db: Db, username: string) {
+  const rows = await db.select().from(users).where(eq(users.username, username)).limit(1);
   return rows[0] ?? null;
 }
 
@@ -294,12 +295,22 @@ export async function getUserByIdForAuth(db: Db, id: number) {
   return rows[0] ?? null;
 }
 
+export async function getUserByUsername(db: Db, username: string): Promise<PublicUser | null> {
+  const rows = await db
+    .select(PUBLIC_USER_COLUMNS)
+    .from(users)
+    .where(eq(users.username, username))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 export async function getUserByEmail(db: Db, email: string): Promise<PublicUser | null> {
   const rows = await db.select(PUBLIC_USER_COLUMNS).from(users).where(eq(users.email, email)).limit(1);
   return rows[0] ?? null;
 }
 
 export interface CreateUserInput {
+  username: string;
   email: string;
   name: string;
   role?: 'admin' | 'agent';
@@ -307,17 +318,19 @@ export interface CreateUserInput {
 }
 
 /**
- * Returns the existing user when the email is already taken, so the operation
- * is idempotent. Use `getUserByEmail` when a duplicate must be an error.
+ * Returns the existing user when the username is already taken, so the
+ * operation is idempotent. Use `getUserByUsername` when a duplicate must be an
+ * error.
  */
 export async function createUser(db: Db, input: CreateUserInput): Promise<PublicUser> {
-  const existing = await getUserByEmail(db, input.email);
+  const existing = await getUserByUsername(db, input.username);
   if (existing) return existing;
 
   const inserted = (
     await db
       .insert(users)
       .values({
+        username: input.username,
         email: input.email,
         name: input.name,
         role: input.role ?? 'agent',
@@ -329,6 +342,7 @@ export async function createUser(db: Db, input: CreateUserInput): Promise<Public
 }
 
 export interface UpdateUserInput {
+  username?: string;
   email?: string;
   name?: string;
   role?: 'admin' | 'agent';
@@ -344,6 +358,7 @@ export async function updateUser(
   if (!existing) return null;
 
   const values: Record<string, unknown> = {};
+  if (patch.username !== undefined) values.username = patch.username;
   if (patch.email !== undefined) values.email = patch.email;
   if (patch.name !== undefined) values.name = patch.name;
   if (patch.role !== undefined) values.role = patch.role;

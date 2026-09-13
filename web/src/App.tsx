@@ -7,29 +7,37 @@ import { TicketDetailPage } from './pages/TicketDetail.tsx';
 import { UsersPage } from './pages/Users.tsx';
 import { TokensPage } from './pages/Tokens.tsx';
 
+/**
+ * A nav tab. React Router already appends `active` to the className it is
+ * given, so passing the literal string is enough — the per-link
+ * `({ isActive }) => ...` callback this replaced only ever restated that.
+ */
+function Tab({ to, end, children }: { to: string; end?: boolean; children: React.ReactNode }) {
+  return (
+    <NavLink to={to} end={end} className="tab">
+      {children}
+    </NavLink>
+  );
+}
+
 function TopBar() {
   const { user, logout } = useAuth();
+  const admin = isAdmin(user?.role);
   return (
-    <div className="topbar">
+    <header className="topbar">
       <span className="brand">liteticket</span>
       <nav>
-        <NavLink to="/" end className={({ isActive }) => (isActive ? 'active' : '')}>
+        <Tab to="/" end>
           工单
-        </NavLink>
-        {isAdmin(user?.role) && (
-          <NavLink to="/users" className={({ isActive }) => (isActive ? 'active' : '')}>
-            用户
-          </NavLink>
-        )}
-        <NavLink to="/tokens" className={({ isActive }) => (isActive ? 'active' : '')}>
-          我的 Token
-        </NavLink>
+        </Tab>
+        {admin && <Tab to="/users">用户</Tab>}
+        <Tab to="/tokens">我的令牌</Tab>
       </nav>
-      <span className="who small">
+      <span className="who">
         {user ? (
           <>
-            {user.name}
-            {isAdmin(user.role) ? '（管理员）' : ''}
+            <span className="who-name">{user.name}</span>
+            {admin && <span className="who-role">管理员</span>}
             <button className="link" onClick={logout}>
               退出
             </button>
@@ -38,7 +46,7 @@ function TopBar() {
           <Link to="/login">登录</Link>
         )}
       </span>
-    </div>
+    </header>
   );
 }
 
@@ -57,13 +65,22 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 
 export function App() {
   const { user, loading } = useAuth();
+  const { pathname } = useLocation();
 
   if (loading) return <Loading label="正在验证登录状态…" />;
+
+  /**
+   * The login page is a full-bleed split screen, so it renders outside the
+   * `.wrap` container that centres and width-caps every other page. Nesting it
+   * inside would clamp the brand panel to the wrapper's 1100px and push it off
+   * the left edge instead of filling the viewport.
+   */
+  const bare = pathname === '/login';
 
   return (
     <>
       {user && <TopBar />}
-      <div className="wrap">
+      <div className={bare ? 'wrap bare' : 'wrap'}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route

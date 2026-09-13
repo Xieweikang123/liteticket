@@ -2,18 +2,18 @@
  * End-to-end verification for liteticket.
  *
  * Run against a live server:
- *   node scripts/verify.mjs <token> [baseUrl] [adminEmail] [adminPassword]
+ *   node scripts/verify.mjs <token> [baseUrl] [adminUsername] [adminPassword]
  *
  * Uses fetch with explicit UTF-8 so results are not affected by the terminal's
  * console encoding.
  */
 const token = process.argv[2];
 const base = process.argv[3] ?? 'http://127.0.0.1:8787';
-const adminEmail = process.argv[4] ?? 'admin@localhost';
+const adminUsername = process.argv[4] ?? 'admin';
 const adminPassword = process.argv[5] ?? '1';
 
 if (!token) {
-  console.error('usage: node scripts/verify.mjs <token> [baseUrl] [adminEmail] [adminPassword]');
+  console.error('usage: node scripts/verify.mjs <token> [baseUrl] [adminUsername] [adminPassword]');
   process.exit(1);
 }
 
@@ -51,11 +51,11 @@ async function api(path, init = {}) {
  * The API is the only auth surface now: there is no login page and no session
  * cookie, so authentication for a human and for a script is the same call.
  */
-async function login(email, password) {
+async function login(username, password) {
   const res = await fetch(`${base}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
-    body: JSON.stringify({ email, password, tokenName: 'verify' }),
+    body: JSON.stringify({ username, password, tokenName: 'verify' }),
   });
   if (res.status !== 200) return null;
   const body = await res.json().catch(() => null);
@@ -95,12 +95,12 @@ console.log(`\nverifying ${base}\n`);
 // ---- login -----------------------------------------------------------------
 let sessionToken;
 {
-  const t = await login(adminEmail, adminPassword);
+  const t = await login(adminUsername, adminPassword);
   sessionToken = t;
   check('admin can log in and receive a token', Boolean(t), 'no token returned');
 }
 {
-  const t = await login(adminEmail, 'definitely-wrong');
+  const t = await login(adminUsername, 'definitely-wrong');
   check('wrong password rejected', t === null);
 }
 {
@@ -108,7 +108,7 @@ let sessionToken;
   check('login token authenticates', r.status === 200, `status ${r.status}`);
   check('login token reports the owner role', r.body?.role === 'admin', `role ${r.body?.role}`);
   check('login token is bound to a user', typeof r.body?.userId === 'number', `userId ${r.body?.userId}`);
-  check('login token carries the user identity', r.body?.user?.email === adminEmail, `email ${r.body?.user?.email}`);
+  check('login token carries the user identity', r.body?.user?.username === adminUsername, `username ${r.body?.user?.username}`);
 }
 {
   // The SPA shell is public: the client redirects to /login itself once it
@@ -248,17 +248,26 @@ let userId;
   const r = await api('/api/users', {
     method: 'POST',
     headers: jsonAuth,
-    body: JSON.stringify({ email: 'agent@example.com', name: '客服小王' }),
+    body: JSON.stringify({ username: 'agent-wang', email: 'agent@example.com', name: '客服小王' }),
   });
   userId = r.body?.id;
   check('create user returns 201', r.status === 201, `status ${r.status}`);
   check('utf8 user name roundtrips', r.body?.name === '客服小王', r.body?.name);
+  check('username roundtrips', r.body?.username === 'agent-wang', r.body?.username);
 }
 {
   const r = await api('/api/users', {
     method: 'POST',
     headers: jsonAuth,
-    body: JSON.stringify({ email: 'agent@example.com', name: '重复' }),
+    body: JSON.stringify({ username: 'agent-wang', email: 'other@example.com', name: '重复' }),
+  });
+  check('duplicate username rejected with 409', r.status === 409, `status ${r.status}`);
+}
+{
+  const r = await api('/api/users', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ username: 'agent-other', email: 'agent@example.com', name: '重复' }),
   });
   check('duplicate email rejected with 409', r.status === 409, `status ${r.status}`);
 }
@@ -266,7 +275,15 @@ let userId;
   const r = await api('/api/users', {
     method: 'POST',
     headers: jsonAuth,
-    body: JSON.stringify({ email: 'not-an-email', name: 'x' }),
+    body: JSON.stringify({ username: 'bad name', email: 'a@b.com', name: 'x' }),
+  });
+  check('invalid username rejected with 422', r.status === 422, `status ${r.status}`);
+}
+{
+  const r = await api('/api/users', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ username: 'agent-x', email: 'not-an-email', name: 'x' }),
   });
   check('invalid user email rejected with 422', r.status === 422, `status ${r.status}`);
 }
@@ -374,7 +391,7 @@ let userId;
   const r = await api('/api/users', {
     method: 'POST',
     headers: { Authorization: `Bearer ${sessionToken}`, 'Content-Type': 'application/json; charset=utf-8' },
-    body: JSON.stringify({ email: 'nope@example.com', name: 'nope', role: 'admin' }),
+    body: JSON.stringify({ username: 'nope', email: 'nope@example.com', name: 'nope', role: 'admin' }),
   });
   check('admin token may create a user', r.status === 201, `status ${r.status}`);
   if (r.body?.id) await api(`/api/users/${r.body.id}`, { method: 'DELETE', headers: auth });
@@ -388,13 +405,19 @@ let userId;
   const created = await api('/api/users', {
     method: 'POST',
     headers: jsonAuth,
-    body: JSON.stringify({ email: 'plain-agent@example.com', name: '普通客服', role: 'agent', password: 'secret' }),
+    body: JSON.stringify({
+      username: 'plain-agent',
+      email: 'plain-agent@example.com',
+      name: '普通客服',
+      role: 'agent',
+      password: 'secret',
+    }),
   });
   const agentId = created.body?.id;
   check('agent user created with role', created.body?.role === 'agent', JSON.stringify(created.body?.role));
   check('password hash is never returned', created.body && !('passwordHash' in created.body));
 
-  const agentToken = await login('plain-agent@example.com', 'secret');
+  const agentToken = await login('plain-agent', 'secret');
   check('agent can log in', Boolean(agentToken));
 
   if (agentToken) {
@@ -404,7 +427,7 @@ let userId;
     const denied = await api('/api/users', {
       method: 'POST',
       headers: { Authorization: `Bearer ${agentToken}`, 'Content-Type': 'application/json; charset=utf-8' },
-      body: JSON.stringify({ email: 'x@example.com', name: 'x' }),
+      body: JSON.stringify({ username: 'x', email: 'x@example.com', name: 'x' }),
     });
     check('agent cannot create users (403)', denied.status === 403, `status ${denied.status}`);
 
@@ -446,7 +469,7 @@ let userId;
     const stale = await api('/api/auth/me', { headers: { Authorization: `Bearer ${agentToken}` } });
     check('password change revokes tokens issued from the old password', stale.status === 401, `status ${stale.status}`);
 
-    const relogin = await login('plain-agent@example.com', 'rotated');
+    const relogin = await login('plain-agent', 'rotated');
     check('the account can log in with the new password', Boolean(relogin));
   }
 
@@ -455,7 +478,7 @@ let userId;
 {
   // The last admin cannot be removed out from under the system.
   const list = await api('/api/users', { headers: auth });
-  const admin = list.body?.items?.find((u) => u.email === adminEmail);
+  const admin = list.body?.items?.find((u) => u.username === adminUsername);
   if (admin) {
     const r = await api(`/api/users/${admin.id}`, {
       method: 'PATCH',

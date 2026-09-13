@@ -15,6 +15,13 @@
       "when": 1789265778808,
       "tag": "0001_fine_rocket_racer",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789291591220,
+      "tag": "0002_sparkling_human_robot",
+      "breakpoints": true
     }
   ]
 }

@@ -34,12 +34,14 @@ function migrationsDir(): string | null {
 const BOOTSTRAP_SQL = [
   `CREATE TABLE IF NOT EXISTS users (
      id INTEGER PRIMARY KEY AUTOINCREMENT,
+     username TEXT NOT NULL,
      email TEXT NOT NULL,
      name TEXT NOT NULL,
      role TEXT NOT NULL DEFAULT 'agent',
      password_hash TEXT,
      created_at TEXT NOT NULL DEFAULT (datetime('now'))
    )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users (username)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users (email)`,
 
   `CREATE TABLE IF NOT EXISTS settings (

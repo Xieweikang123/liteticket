@@ -13,6 +13,7 @@ export type Role = 'admin' | 'agent';
 
 export interface AuthUser {
   id: number;
+  username: string;
   email: string;
   name: string;
   role: Role;
@@ -131,10 +132,10 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
 }
 
 export const api = {
-  login: (email: string, password: string) =>
+  login: (username: string, password: string) =>
     request<{ token: string; user: AuthUser }>('/auth/login', {
       method: 'POST',
-      body: { email, password },
+      body: { username, password },
       anonymous: true,
     }),
 
@@ -193,7 +194,7 @@ export const api = {
 
   listUsers: () => request<{ items: (AuthUser & { createdAt: string })[] }>('/users'),
 
-  createUser: (input: { email: string; name: string; role?: Role; password?: string }) =>
+  createUser: (input: { username: string; email: string; name: string; role?: Role; password?: string }) =>
     request<AuthUser>('/users', { method: 'POST', body: input }),
 
   updateUser: (id: number, patch: Record<string, unknown>) =>

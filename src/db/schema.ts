@@ -7,7 +7,8 @@ export const USER_ROLES = ['admin', 'agent'] as const;
  * Users are agents who log into the UI. `admin` can manage users and delete
  * tickets; `agent` can work tickets but not administer.
  *
- * `passwordHash` is a scrypt digest in `salt:hash` hex form — never the
+ * `username` is the login identifier; `email` is a contact field. Both are
+ * unique. `passwordHash` is a scrypt digest in `salt:hash` hex form — never the
  * plaintext. It is nullable so pre-existing rows survive the migration; the
  * seed step fills it on first boot.
  */
@@ -15,6 +16,7 @@ export const users = sqliteTable(
   'users',
   {
     id: integer('id').primaryKey({ autoIncrement: true }),
+    username: text('username').notNull(),
     email: text('email').notNull(),
     name: text('name').notNull(),
     role: text('role', { enum: ['admin', 'agent'] })
@@ -25,7 +27,10 @@ export const users = sqliteTable(
       .notNull()
       .default(sql`(datetime('now'))`),
   },
-  (t) => [uniqueIndex('users_email_unique').on(t.email)],
+  (t) => [
+    uniqueIndex('users_username_unique').on(t.username),
+    uniqueIndex('users_email_unique').on(t.email),
+  ],
 );
 
 /**

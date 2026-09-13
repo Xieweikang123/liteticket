@@ -7,7 +7,7 @@ interface AuthState {
   user: AuthUser | null;
   /** True until the stored token has been checked against the server. */
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -64,8 +64,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const res = await api.login(email, password);
+  const login = useCallback(async (username: string, password: string) => {
+    const res = await api.login(username, password);
     setToken(res.token);
     setUser(res.user);
   }, []);

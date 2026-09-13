@@ -47,6 +47,7 @@ export function UsersPage() {
             <thead>
               <tr>
                 <th style={{ width: 50 }}>#</th>
+                <th>用户名</th>
                 <th>姓名</th>
                 <th>邮箱</th>
                 <th style={{ width: 90 }}>角色</th>
@@ -84,6 +85,7 @@ function UserRow({
   onError: (e: unknown) => void;
 }) {
   const [editing, setEditing] = useState(false);
+  const [username, setUsername] = useState(row.username);
   const [name, setName] = useState(row.name);
   const [email, setEmail] = useState(row.email);
   const [password, setPassword] = useState('');
@@ -93,7 +95,7 @@ function UserRow({
     setBusy(true);
     onError(null);
     try {
-      const patch: Record<string, unknown> = { name, email };
+      const patch: Record<string, unknown> = { username, name, email };
       if (password) patch.password = password;
       await api.updateUser(row.id, patch);
       setEditing(false);
@@ -132,6 +134,9 @@ function UserRow({
       <tr>
         <td className="muted">{row.id}</td>
         <td>
+          <input value={username} onChange={(e) => setUsername(e.target.value)} style={{ width: '100%' }} />
+        </td>
+        <td>
           <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: '100%' }} />
         </td>
         <td>
@@ -166,6 +171,7 @@ function UserRow({
   return (
     <tr>
       <td className="muted">{row.id}</td>
+      <td className="mono small">{row.username}</td>
       <td>
         {row.name}
         {isSelf && <span className="pill closed" style={{ marginLeft: 8 }}>我</span>}
@@ -194,6 +200,7 @@ function UserRow({
 
 function NewUserCard({ onCreated }: { onCreated: () => void }) {
   const [open, setOpen] = useState(false);
+  const [username, setUsername] = useState('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -206,7 +213,8 @@ function NewUserCard({ onCreated }: { onCreated: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      await api.createUser({ name, email, password: password || undefined, role });
+      await api.createUser({ username, name, email, password: password || undefined, role });
+      setUsername('');
       setName('');
       setEmail('');
       setPassword('');
@@ -235,6 +243,16 @@ function NewUserCard({ onCreated }: { onCreated: () => void }) {
       <h2>新建用户</h2>
       <ErrorBox error={error} />
       <div className="row">
+        <div style={{ flex: 1, minWidth: 140 }}>
+          <Field label="用户名">
+            <input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              style={{ width: '100%' }}
+              required
+            />
+          </Field>
+        </div>
         <div style={{ flex: 1, minWidth: 160 }}>
           <Field label="姓名">
             <input value={name} onChange={(e) => setName(e.target.value)} style={{ width: '100%' }} required />

@@ -9,14 +9,14 @@
  * Usage:
  *   node scripts/probe-ui.mjs [baseUrl]
  *
- * Credentials come from PROBE_EMAIL / PROBE_PASSWORD and must match the
- * instance's seeded admin (LITETICKET_ADMIN_EMAIL / LITETICKET_ADMIN_PASSWORD).
- * The defaults match the documented seed (`admin@localhost` / `1`).
+ * Credentials come from PROBE_USERNAME / PROBE_PASSWORD and must match the
+ * instance's seeded admin (LITETICKET_ADMIN_USERNAME / LITETICKET_ADMIN_PASSWORD).
+ * The defaults match the documented seed (`admin` / `1`).
  */
 import { chromium } from 'playwright-core';
 
 const BASE = process.argv[2] ?? 'http://127.0.0.1:5173';
-const EMAIL = process.env.PROBE_EMAIL ?? 'admin@localhost';
+const USERNAME = process.env.PROBE_USERNAME ?? 'admin';
 const PASSWORD = process.env.PROBE_PASSWORD ?? '1';
 
 let pass = 0;
@@ -65,7 +65,7 @@ try {
 
   // ---- wrong password is rejected -----------------------------------------
   await page.fill('input[type="password"]', 'definitely-wrong');
-  await page.locator('form input').first().fill(EMAIL);
+  await page.locator('form input').first().fill(USERNAME);
   await page.click('button[type="submit"]');
   await page.waitForSelector('.error', { timeout: 8000 }).catch(() => {});
   check('wrong password shows an error', (await page.locator('.error').count()) > 0);
@@ -182,8 +182,8 @@ try {
   await page.click('nav a:has-text("用户")');
   await page.waitForSelector('button:has-text("新建用户")', { timeout: 8000 });
   check('users page rendered', (await page.locator('button:has-text("新建用户")').count()) > 0);
-  await page.waitForSelector('td:has-text("admin@localhost")', { timeout: 8000 });
-  check('admin row is present', (await page.locator('td:has-text("admin@localhost")').count()) > 0);
+  await page.waitForSelector('td:has-text("admin")', { timeout: 8000 });
+  check('admin row is present', (await page.locator('td:has-text("admin")').count()) > 0);
 
   // ---- an agent (non-admin) must boot cleanly ------------------------------
   //
@@ -191,7 +191,8 @@ try {
   // the signed-in user by calling GET /users, which is admin-only, so an agent
   // got a 403 on every page load. Runs while still logged in as admin, since
   // it needs an admin token to create the agent.
-  const agentEmail = `agent-ui-${Date.now()}@example.com`;
+  const agentUsername = `agent-ui-${Date.now()}`;
+  const agentEmail = `${agentUsername}@example.com`;
   const agentPassword = 'agentpass123';
   const adminToken = await page.evaluate(() => localStorage.getItem('liteticket.token'));
 
@@ -199,6 +200,7 @@ try {
     method: 'POST',
     headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      username: agentUsername,
       email: agentEmail,
       name: 'Agent UI',
       role: 'agent',
@@ -216,7 +218,7 @@ try {
   agentPage.on('pageerror', (e) => agentErrors.push(String(e)));
 
   await agentPage.goto(`${BASE}/login`, { waitUntil: 'networkidle' });
-  await agentPage.locator('form input').first().fill(agentEmail);
+  await agentPage.locator('form input').first().fill(agentUsername);
   await agentPage.fill('input[type="password"]', agentPassword);
   await agentPage.locator('button[type="submit"]').click();
   await agentPage.waitForFunction(() => !location.pathname.startsWith('/login'), { timeout: 10000 });

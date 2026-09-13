@@ -56,7 +56,15 @@ const createCommentSchema = z.object({
   authorId: z.number().int().positive().nullish(),
 });
 
+/** Login identifiers are usernames: no spaces, kept short and greppable. */
+const username = z
+  .string()
+  .min(1, 'username is required')
+  .max(64)
+  .regex(/^[a-zA-Z0-9._-]+$/, 'username may only contain letters, digits, . _ -');
+
 const createUserSchema = z.object({
+  username,
   email: z.email('email must be a valid email'),
   name: z.string().min(1, 'name is required').max(200),
   role: z.enum(USER_ROLES).optional(),
@@ -64,6 +72,7 @@ const createUserSchema = z.object({
 });
 
 const updateUserSchema = z.object({
+  username: username.optional(),
   email: z.email().optional(),
   name: z.string().min(1).max(200).optional(),
   role: z.enum(USER_ROLES).optional(),
@@ -81,12 +90,11 @@ const listQuerySchema = z.object({
 
 const loginSchema = z.object({
   /**
-   * Deliberately looser than `z.email()`: the seeded admin is
-   * `admin@localhost`, which has no TLD and is rejected by strict RFC-style
-   * validation. Login looks the address up rather than issuing it, so a
-   * syntactically odd but existing address must still be able to sign in.
+   * The login identifier. Deliberately looser than the create-user rule: an
+   * existing account must still be able to sign in even if its username
+   * predates or sidesteps the current validation.
    */
-  email: z.string().min(1, 'email is required').max(320),
+  username: z.string().min(1, 'username is required').max(64),
   password: z.string().min(1, 'password is required').max(200),
   /** Label for the token minted by this login. */
   tokenName: z.string().min(1).max(100).optional(),
@@ -122,11 +130,11 @@ export function apiRoutes(db: Db) {
     const parsed = loginSchema.safeParse(raw);
     if (!parsed.success) return c.json({ error: 'validation failed', issues: issues(parsed.error) }, 422);
 
-    const user = await findUserForLogin(db, parsed.data.email);
-    // Same response for unknown email and wrong password, so the endpoint does
-    // not confirm which emails exist.
+    const user = await findUserForLogin(db, parsed.data.username);
+    // Same response for unknown username and wrong password, so the endpoint
+    // does not confirm which accounts exist.
     if (!user || !verifyPassword(parsed.data.password, user.passwordHash)) {
-      return c.json({ error: 'invalid email or password' }, 401);
+      return c.json({ error: '用户名或密码不正确' }, 401);
     }
 
     const name = parsed.data.tokenName ?? `login-${new Date().toISOString().slice(0, 10)}`;
@@ -134,7 +142,7 @@ export function apiRoutes(db: Db) {
 
     return c.json({
       token,
-      user: { id: user.id, email: user.email, name: user.name, role: user.role },
+      user: { id: user.id, username: user.username, email: user.email, name: user.name, role: user.role },
     });
   });
 
@@ -176,11 +184,11 @@ export function apiRoutes(db: Db) {
    */
   api.get('/auth/me', async (c) => {
     const p = c.get('auth');
-    let user: { id: number; email: string; name: string; role: string } | null = null;
+    let user: { id: number; username: string; email: string; name: string; role: string } | null = null;
 
     if (p.userId != null) {
       const row = await svc.getUser(db, p.userId);
-      if (row) user = { id: row.id, email: row.email, name: row.name, role: row.role };
+      if (row) user = { id: row.id, username: row.username, email: row.email, name: row.name, role: row.role };
     }
 
     return c.json({
@@ -311,6 +319,9 @@ export function apiRoutes(db: Db) {
     const parsed = createUserSchema.safeParse(raw);
     if (!parsed.success) return c.json({ error: 'validation failed', issues: issues(parsed.error) }, 422);
 
+    if (await svc.getUserByUsername(db, parsed.data.username)) {
+      return c.json({ error: 'username already in use' }, 409);
+    }
     if (await svc.getUserByEmail(db, parsed.data.email)) {
       return c.json({ error: 'email already in use' }, 409);
     }
@@ -328,6 +339,11 @@ export function apiRoutes(db: Db) {
 
     const parsed = updateUserSchema.safeParse(raw);
     if (!parsed.success) return c.json({ error: 'validation failed', issues: issues(parsed.error) }, 422);
+
+    if (parsed.data.username !== undefined) {
+      const clash = await svc.getUserByUsername(db, parsed.data.username);
+      if (clash && clash.id !== id) return c.json({ error: 'username already in use' }, 409);
+    }
 
     if (parsed.data.email !== undefined) {
       const clash = await svc.getUserByEmail(db, parsed.data.email);

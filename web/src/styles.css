@@ -30,52 +30,119 @@ a:hover {
   text-decoration: underline;
 }
 
-/* ---- layout ---- */
+/* ---- top bar ----
+ *
+ * Brand and nav are separated by a rule rather than by whitespace alone: at a
+ * 20px gap the wordmark read as another nav item. The bar is full-height flex
+ * and the tabs stretch to it, so their underline can sit on the bar's own
+ * bottom border instead of floating under the text like a strikethrough.
+ */
 
 .topbar {
   background: var(--card);
   border-bottom: 1px solid var(--border);
-  padding: 0 20px;
   display: flex;
-  align-items: center;
-  gap: 20px;
-  height: 52px;
+  align-items: stretch;
+  gap: 0 12px;
+  padding: 0 20px;
+  height: 56px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
 }
 
 .topbar .brand {
+  display: flex;
+  align-items: center;
   font-weight: 700;
   font-size: 15px;
+  letter-spacing: -0.1px;
   color: var(--text);
+  padding-right: 18px;
+  margin-right: 6px;
+  border-right: 1px solid var(--border);
 }
 
 .topbar nav {
   display: flex;
-  gap: 16px;
+  align-items: stretch;
+  gap: 2px;
   flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
-.topbar nav a {
+.topbar nav::-webkit-scrollbar {
+  display: none;
+}
+
+.topbar .tab {
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
   color: var(--muted);
-  padding: 4px 0;
+  font-weight: 500;
+  white-space: nowrap;
+  /* Reserves the underline's height so activating a tab does not shift text. */
   border-bottom: 2px solid transparent;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
 }
 
-.topbar nav a.active {
+.topbar .tab:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.topbar .tab.active {
   color: var(--primary);
   border-bottom-color: var(--primary);
 }
 
+.topbar .tab:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -3px;
+  border-radius: 4px 4px 0 0;
+}
+
 .topbar .who {
-  color: var(--muted);
   display: flex;
   align-items: center;
   gap: 10px;
+  padding-left: 14px;
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.topbar .who-name {
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* The role is an attribute of the account, not its name — a quiet chip keeps
+   it from reading as part of the username the way「（管理员）」did. */
+.topbar .who-role {
+  font-size: 12px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #e0edff;
+  color: #1d4ed8;
 }
 
 .wrap {
   max-width: 1100px;
   margin: 20px auto;
   padding: 0 20px;
+}
+
+/* Full-bleed pages (the login screen) opt out of the centred column. */
+.wrap.bare {
+  max-width: none;
+  margin: 0;
+  padding: 0;
 }
 
 /* ---- card ---- */
@@ -317,4 +384,338 @@ tbody tr:hover {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
   word-break: break-all;
+}
+
+/* ---- login / auth --------------------------------------------------------
+ *
+ * The login screen is the one page with no top bar, so it owns the whole
+ * viewport: a branded panel on the left, the form on the right. Everything
+ * here is scoped under .auth so it cannot leak into the app's own pages.
+ */
+
+.auth {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+  background: var(--card);
+}
+
+/* Left: brand story. Deep navy rather than the app's blue, so the form — not
+   the decoration — is the brightest thing on screen. */
+.auth-brand {
+  position: relative;
+  overflow: hidden;
+  padding: 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  color: #e8eefc;
+  background:
+    radial-gradient(1100px 620px at 12% -10%, #2f57d6 0%, transparent 58%),
+    radial-gradient(760px 520px at 96% 108%, #6d3fd4 0%, transparent 62%),
+    linear-gradient(158deg, #0d1730 0%, #131c38 52%, #171f3d 100%);
+}
+
+/* A faint grid keeps the large dark area from reading as flat. */
+.auth-brand::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size: 46px 46px;
+  mask-image: radial-gradient(72% 62% at 28% 12%, #000 0%, transparent 100%);
+  -webkit-mask-image: radial-gradient(72% 62% at 28% 12%, #000 0%, transparent 100%);
+  pointer-events: none;
+}
+
+.auth-brand > * {
+  position: relative;
+  z-index: 1;
+}
+
+.auth-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.auth-logo-mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: linear-gradient(150deg, #5b8cff, #3358d4);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.35);
+}
+
+.auth-logo-word {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: #fff;
+}
+
+.auth-pitch {
+  margin-top: auto;
+}
+
+.auth-pitch h1 {
+  margin: 0 0 12px;
+  font-size: 32px;
+  line-height: 1.28;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  color: #fff;
+  max-width: 15em;
+}
+
+.auth-pitch p {
+  margin: 0;
+  max-width: 26em;
+  font-size: 14px;
+  line-height: 1.7;
+  color: rgba(226, 234, 255, 0.72);
+}
+
+.auth-points {
+  margin: 0 0 auto;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.auth-points li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 14px;
+  border-left: 2px solid rgba(120, 160, 255, 0.4);
+}
+
+.auth-points strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.auth-points span {
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(226, 234, 255, 0.62);
+}
+
+/* Right: the form. `place-items: center` centres the card, and the panel is
+   given a faint tint of the brand gradient so the large white area still reads
+   as part of the same surface rather than an empty column. */
+.auth-panel {
+  position: relative;
+  display: grid;
+  place-items: center;
+  padding: 40px 24px;
+  background:
+    radial-gradient(620px 460px at 50% 0%, rgba(37, 99, 235, 0.055) 0%, transparent 70%),
+    var(--card);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 364px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  animation: auth-rise 0.34s cubic-bezier(0.22, 0.68, 0.32, 1) both;
+}
+
+@keyframes auth-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.auth-head {
+  margin-bottom: 4px;
+}
+
+/* The wordmark is a brand-panel element, so on the form it only shows at the
+   narrow width where the brand panel is gone. */
+.auth-logo.compact {
+  display: none;
+  margin-bottom: 18px;
+}
+
+.auth-head h2 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: var(--text);
+}
+
+.auth-head p {
+  margin: 0;
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.auth-field > label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Wraps the input so the reveal button can sit inside its border. */
+.auth-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.auth-control:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.auth-control input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+/* The shared `input:focus` rule paints an outline; inside the wrapper the
+   focus ring belongs to the border, or it double-draws. */
+.auth-control input:focus {
+  outline: none;
+}
+
+.auth-control input::placeholder {
+  color: #a5adba;
+}
+
+.auth-reveal {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  margin-right: 3px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  transition: color 0.15s ease;
+}
+
+.auth-reveal:hover:not(:disabled) {
+  background: none;
+  color: var(--text);
+}
+
+.auth-hint {
+  margin: 0;
+  font-size: 12px;
+  color: #a16207;
+}
+
+.auth-submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.28);
+}
+
+.auth-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: auth-spin 0.7s linear infinite;
+}
+
+@keyframes auth-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.auth-alt {
+  margin: 4px 0 0;
+  text-align: center;
+  line-height: 1.6;
+}
+
+/* The shared .error box is sized for a full-width page; inside the narrow auth
+   card it needs to match the field rhythm. */
+.auth-card .error {
+  margin-bottom: 0;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* Narrow screens: the brand panel is decoration, so it goes first and the
+   form keeps the full width. */
+@media (max-width: 860px) {
+  .auth {
+    grid-template-columns: 1fr;
+    min-height: 100dvh;
+  }
+
+  .auth-brand {
+    display: none;
+  }
+
+  .auth-logo.compact {
+    display: flex;
+  }
+
+  .auth-panel {
+    padding: 32px 20px;
+    align-content: center;
+  }
+}
+
+/* Someone who asked the OS to stop animating should get no entrance, no spin. */
+@media (prefers-reduced-motion: reduce) {
+  .auth-card {
+    animation: none;
+  }
+
+  .auth-spinner {
+    animation-duration: 2s;
+  }
 }

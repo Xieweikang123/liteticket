@@ -18,7 +18,7 @@ const { db } = getDb();
  * one-command experience this project targets. Existing installs are untouched:
  * a user that already has a password and the admin role is left alone.
  */
-const adminId = await ensureUser(db, config.adminEmail, 'Admin');
+const adminId = await ensureUser(db, config.adminUsername, config.adminEmail, 'Admin');
 const admin = (await db.select().from(users).where(eq(users.id, adminId)).limit(1))[0];
 const seededAdmin = Boolean(admin && !admin.passwordHash);
 if (admin && (admin.role !== 'admin' || !admin.passwordHash)) {
@@ -64,7 +64,7 @@ serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => 
   if (seededAdmin) {
     console.log('');
     console.log('  Admin login (change the password after signing in):');
-    console.log(`    ${config.adminEmail} / ${config.adminPassword}`);
+    console.log(`    ${config.adminUsername} / ${config.adminPassword}`);
   }
   console.log('');
 });
