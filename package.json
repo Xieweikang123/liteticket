@@ -10,7 +10,8 @@
   "files": [
     "bin",
     "src",
-    "drizzle"
+    "drizzle",
+    "web/dist"
   ],
   "engines": {
     "node": ">=20.11"
@@ -18,9 +19,13 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dev:no-open": "node scripts/dev.mjs --no-open",
+    "dev:api": "tsx watch --include src/**/* src/server.ts",
+    "dev:web": "vite",
     "reset": "node scripts/dev.mjs --reset",
     "start": "node bin/liteticket.js",
-    "build": "tsc",
+    "build": "tsc && vite build",
+    "build:api": "tsc",
+    "build:web": "vite build",
     "typecheck": "tsc --noEmit",
     "verify": "node scripts/verify.mjs",
     "db:generate": "drizzle-kit generate",
@@ -31,12 +36,20 @@
     "@libsql/client": "^0.18.0",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.13.7",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router-dom": "^7.18.3",
     "zod": "^4.6.4"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
     "drizzle-kit": "^0.31.10",
+    "playwright-core": "^1.63.0",
     "tsx": "^4.23.13",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6"
   }
 }

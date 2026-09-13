@@ -10,8 +10,9 @@
     "noImplicitOverride": true,
     "verbatimModuleSyntax": true,
 
-    "jsx": "react-jsx",
-    "jsxImportSource": "hono/jsx",
+    // No JSX here any more: the server is a pure JSON API, and the React
+    // client has its own config (tsconfig.web.json) with different module
+    // resolution and JSX settings.
 
     // Source files import each other with explicit .ts/.tsx extensions so the
     // same files run under tsx (dev, from a git clone) and tsc (published
