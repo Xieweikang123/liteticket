@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, like, or, sql } from 'drizzle-orm';
 import type { Db } from '../db/index.ts';
-import { comments, tags, ticketTags, tickets, users } from '../db/schema.ts';
+import { comments, tags, ticketTags, tickets, tokens, users } from '../db/schema.ts';
 import type { Comment, Ticket, User } from '../db/schema.ts';
 import { hashPassword } from '../auth.ts';
 
@@ -347,12 +347,26 @@ export async function updateUser(
   if (patch.email !== undefined) values.email = patch.email;
   if (patch.name !== undefined) values.name = patch.name;
   if (patch.role !== undefined) values.role = patch.role;
-  if (patch.password !== undefined && patch.password.length > 0) {
-    values.passwordHash = hashPassword(patch.password);
+
+  const changingPassword = patch.password !== undefined && patch.password.length > 0;
+  if (changingPassword) {
+    values.passwordHash = hashPassword(patch.password!);
   }
 
   if (Object.keys(values).length > 0) {
     await db.update(users).set(values).where(eq(users.id, id));
+  }
+
+  /**
+   * Changing a password revokes every token issued under the old one.
+   *
+   * Without this, a password change would be cosmetic: an attacker holding a
+   * token minted from the compromised password would keep access indefinitely,
+   * because tokens are looked up by hash and never re-checked against the
+   * password. This is the token-based equivalent of "log out everywhere".
+   */
+  if (changingPassword) {
+    await db.delete(tokens).where(eq(tokens.userId, id));
   }
 
   return getUser(db, id);

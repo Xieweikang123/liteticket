@@ -1,7 +1,7 @@
-import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import type { Db } from './db/index.ts';
-import { settings, tokens, users } from './db/schema.ts';
+import { tokens, users } from './db/schema.ts';
 
 export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -34,86 +34,21 @@ export function verifyPassword(password: string, stored: string | null): boolean
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
-/**
- * Read a setting, creating it with `generate()` on first access. Used for the
- * session signing key so it is minted once and persists across restarts.
- */
-export async function getOrCreateSetting(
-  db: Db,
-  key: string,
-  generate: () => string,
-): Promise<string> {
-  const existing = (await db.select().from(settings).where(eq(settings.key, key)).limit(1))[0];
-  if (existing) return existing.value;
-
-  const value = generate();
-  await db.insert(settings).values({ key, value }).onConflictDoNothing();
-  // Re-read: a concurrent boot may have inserted first.
-  const row = (await db.select().from(settings).where(eq(settings.key, key)).limit(1))[0];
-  return row?.value ?? value;
-}
-
-export async function sessionSecret(db: Db): Promise<string> {
-  return getOrCreateSetting(db, 'session_secret', () => randomBytes(32).toString('hex'));
-}
-
-export interface SessionData {
-  /** User id. The live row is re-read each request, so role changes apply at once. */
-  uid: number;
-  /**
-   * Short digest of the user's password hash at login time. Bumping the
-   * password changes it, which invalidates every outstanding session — the
-   * stateless equivalent of "log out everywhere".
-   */
-  pw: string;
-  exp: number;
-}
-
-/** Derive the session's password marker from a stored password hash. */
-export function passwordMarker(passwordHash: string | null): string {
-  return createHash('sha256').update(passwordHash ?? '').digest('hex').slice(0, 16);
-}
-
-/**
- * Sign a session payload as `base64url(json).base64url(hmac)`. The cookie is
- * stateless — no session table, no lookup — which fits the single-command
- * deployment this project targets.
- */
-export function signSession(secret: string, data: SessionData): string {
-  const payload = Buffer.from(JSON.stringify(data)).toString('base64url');
-  const sig = createHmac('sha256', secret).update(payload).digest('base64url');
-  return `${payload}.${sig}`;
-}
-
-export function verifySession(secret: string, cookie: string): SessionData | null {
-  const dot = cookie.lastIndexOf('.');
-  if (dot <= 0) return null;
-
-  const payload = cookie.slice(0, dot);
-  const sig = cookie.slice(dot + 1);
-  const expected = createHmac('sha256', secret).update(payload).digest('base64url');
-
-  const a = Buffer.from(sig);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
-
-  try {
-    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as SessionData;
-    if (typeof data.uid !== 'number' || typeof data.exp !== 'number') return null;
-    if (typeof data.pw !== 'string') return null;
-    if (data.exp < Math.floor(Date.now() / 1000)) return null;
-    return data;
-  } catch {
-    return null;
-  }
-}
-
-export const SESSION_COOKIE = 'lt_session';
-export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
-
 export interface AuthContext {
+  /** Token row id, so a token can be revoked or listed. */
+  tokenId: number;
+  /** Owning user, when the token is bound to one. */
   userId: number | null;
   tokenName: string;
+  /**
+   * Effective role.
+   *
+   * A token bound to a user inherits that user's role, re-read on every
+   * request so a demotion takes effect immediately. An unbound token is a
+   * machine credential with no user behind it and carries full rights — that
+   * is what deployments script against.
+   */
+  role: 'admin' | 'agent';
 }
 
 /**
@@ -121,6 +56,9 @@ export interface AuthContext {
  *
  * Lookup is by hash against an indexed unique column, so there is no scan. The
  * constant-time compare guards the (astronomically unlikely) collision path.
+ *
+ * A token bound to a user inherits that user's role, read live from the users
+ * table so a role change applies on the next request rather than never.
  */
 export async function verifyToken(db: Db, presented: string): Promise<AuthContext | null> {
   const presentedHash = hashToken(presented);
@@ -142,7 +80,32 @@ export async function verifyToken(db: Db, presented: string): Promise<AuthContex
     .set({ lastUsedAt: new Date().toISOString() })
     .where(eq(tokens.id, row.id));
 
-  return { userId: row.userId ?? null, tokenName: row.name };
+  let role: 'admin' | 'agent' = 'admin';
+  if (row.userId != null) {
+    const owner = (await db.select().from(users).where(eq(users.id, row.userId)).limit(1))[0];
+    // The token outlived its owner (cascade did not fire on an old row, or the
+    // row was removed out of band): treat it as unusable rather than as a
+    // userless admin credential.
+    if (!owner) return null;
+    role = owner.role;
+  }
+
+  return {
+    tokenId: row.id,
+    userId: row.userId ?? null,
+    tokenName: row.name,
+    role,
+  };
+}
+
+/**
+ * Look up a user by email along with the stored password hash, for login.
+ * Returns null when the email is unknown.
+ */
+export async function findUserForLogin(db: Db, email: string) {
+  const row = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
+  if (!row) return null;
+  return { id: row.id, email: row.email, name: row.name, role: row.role, passwordHash: row.passwordHash };
 }
 
 /**
@@ -165,6 +128,30 @@ export async function createToken(
     userId: userId ?? null,
   });
   return token;
+}
+
+/** Revoke a single token by id. Scoped by owner so one user cannot drop another's. */
+export async function revokeToken(db: Db, tokenId: number, ownerId?: number): Promise<boolean> {
+  const rows = await db.select().from(tokens).where(eq(tokens.id, tokenId)).limit(1);
+  const row = rows[0];
+  if (!row) return false;
+  if (ownerId !== undefined && row.userId !== ownerId) return false;
+
+  await db.delete(tokens).where(eq(tokens.id, tokenId));
+  return true;
+}
+
+/** Tokens belonging to a user, newest first. Never exposes the hash or value. */
+export async function listTokens(db: Db, userId: number) {
+  const rows = await db.select().from(tokens).where(eq(tokens.userId, userId));
+  return rows
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      createdAt: r.createdAt,
+      lastUsedAt: r.lastUsedAt,
+    }))
+    .sort((a, b) => b.id - a.id);
 }
 
 /**
