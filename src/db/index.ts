@@ -28,7 +28,7 @@ function migrationsDir(): string | null {
 
 /**
  * The fallback schema, used when `drizzle/` is absent (e.g. a fresh git clone
- * before `pnpm db:generate`). Kept in sync with src/db/schema.ts by hand â€?it
+ * before `pnpm db:generate`). Kept in sync with src/db/schema.ts by hand â€” it
  * is the safety net, not the source of truth.
  */
 const BOOTSTRAP_SQL = [
@@ -212,7 +212,7 @@ export async function initDb(file?: string): Promise<ReturnType<typeof buildDb>>
 /** Accessor for code paths that run after initDb() has resolved. */
 export function getDb(): ReturnType<typeof buildDb> {
   if (!singleton) {
-    throw new Error('database not initialized â€?call initDb() first');
+    throw new Error('database not initialized â€” call initDb() first');
   }
   return singleton;
 }

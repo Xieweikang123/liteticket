@@ -72,7 +72,7 @@ CREATE TABLE `__new_tokens` (
 	FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-INSERT INTO `__new_tokens`("id", "name", "token_hash", "kind", "user_id", "created_at", "last_used_at", "expires_at") SELECT "id", "name", "token_hash", "kind", "user_id", "created_at", "last_used_at", "expires_at" FROM `tokens`;--> statement-breakpoint
+INSERT INTO `__new_tokens`("id", "name", "token_hash", "kind", "user_id", "created_at", "last_used_at", "expires_at") SELECT "id", "name", "token_hash", 'api', "user_id", "created_at", "last_used_at", NULL FROM `tokens`;--> statement-breakpoint
 DROP TABLE `tokens`;--> statement-breakpoint
 ALTER TABLE `__new_tokens` RENAME TO `tokens`;--> statement-breakpoint
 CREATE UNIQUE INDEX `tokens_hash_unique` ON `tokens` (`token_hash`);--> statement-breakpoint
