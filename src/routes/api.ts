@@ -3,20 +3,25 @@ import type { MiddlewareHandler } from 'hono';
 import { z } from 'zod';
 import type { Db } from '../db/index.ts';
 import { TICKET_PRIORITIES, TICKET_STATUSES, USER_ROLES } from '../db/schema.ts';
-import { verifyToken } from '../auth.ts';
-import { readSession } from '../session.ts';
-import type { SessionUser } from '../session.ts';
+import {
+  createToken,
+  findUserForLogin,
+  listTokens,
+  revokeToken,
+  verifyPassword,
+  verifyToken,
+} from '../auth.ts';
 import * as svc from '../services/tickets.ts';
 
 /**
- * Who is making the request.
+ * Who is making the request, resolved from a bearer token.
  *
- * A bearer token is a machine credential and carries full (admin) rights — it
- * is the thing deployments script against. A session cookie carries the
- * logged-in user's role.
+ * A token bound to a user carries that user's role. A token with no owner is a
+ * machine credential and carries full rights.
  */
 export interface Principal {
-  source: 'token' | 'session';
+  source: 'token';
+  tokenId: number;
   userId: number | null;
   name: string;
   role: 'admin' | 'agent';
@@ -74,6 +79,23 @@ const listQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).optional(),
 });
 
+const loginSchema = z.object({
+  /**
+   * Deliberately looser than `z.email()`: the seeded admin is
+   * `admin@localhost`, which has no TLD and is rejected by strict RFC-style
+   * validation. Login looks the address up rather than issuing it, so a
+   * syntactically odd but existing address must still be able to sign in.
+   */
+  email: z.string().min(1, 'email is required').max(320),
+  password: z.string().min(1, 'password is required').max(200),
+  /** Label for the token minted by this login. */
+  tokenName: z.string().min(1).max(100).optional(),
+});
+
+const createTokenSchema = z.object({
+  name: z.string().min(1, 'name is required').max(100),
+});
+
 /** Turn a ZodError into a flat, client-friendly shape. */
 function issues(err: z.ZodError) {
   return err.issues.map((i) => ({ path: i.path.join('.'), message: i.message }));
@@ -87,42 +109,96 @@ export function apiRoutes(db: Db) {
   api.get('/health', (c) => c.json({ ok: true, version: '0.1.0' }));
 
   /**
-   * Every other /api route requires either a bearer token (machine credential,
-   * full rights) or a logged-in session cookie. Mounted before the handlers so
-   * a new endpoint is protected by default, rather than by remembering to add
-   * a check.
+   * Log in and receive a bearer token.
+   *
+   * This is public (it is how a client obtains credentials) and it mints a
+   * *user-bound* token, so the resulting credential carries the user's role
+   * rather than blanket admin rights.
+   */
+  api.post('/auth/login', async (c) => {
+    const raw = await c.req.json().catch(() => null);
+    if (raw == null) return c.json({ error: 'invalid JSON body' }, 400);
+
+    const parsed = loginSchema.safeParse(raw);
+    if (!parsed.success) return c.json({ error: 'validation failed', issues: issues(parsed.error) }, 422);
+
+    const user = await findUserForLogin(db, parsed.data.email);
+    // Same response for unknown email and wrong password, so the endpoint does
+    // not confirm which emails exist.
+    if (!user || !verifyPassword(parsed.data.password, user.passwordHash)) {
+      return c.json({ error: 'invalid email or password' }, 401);
+    }
+
+    const name = parsed.data.tokenName ?? `login-${new Date().toISOString().slice(0, 10)}`;
+    const token = await createToken(db, name, user.id);
+
+    return c.json({
+      token,
+      user: { id: user.id, email: user.email, name: user.name, role: user.role },
+    });
+  });
+
+  /**
+   * Every other /api route requires a bearer token.
+   *
+   * Mounted before the handlers so a new endpoint is protected by default,
+   * rather than by remembering to add a check. `/health` and `/auth/login`
+   * are registered above this line and are therefore public.
    */
   api.use('*', async (c, next) => {
     const header = c.req.header('Authorization') ?? '';
     const presented = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
 
-    if (presented) {
-      const auth = await verifyToken(db, presented);
-      if (!auth) return c.json({ error: 'invalid token' }, 401);
-      c.set('auth', {
-        source: 'token',
-        userId: auth.userId,
-        name: auth.tokenName,
-        role: 'admin',
-      });
-      return next();
-    }
+    if (!presented) return c.json({ error: 'authentication required' }, 401);
 
-    const user = await readSession(c, db);
-    if (!user) return c.json({ error: 'authentication required' }, 401);
+    const auth = await verifyToken(db, presented);
+    if (!auth) return c.json({ error: 'invalid token' }, 401);
+
     c.set('auth', {
-      source: 'session',
-      userId: user.id,
-      name: user.name,
-      role: user.role,
+      source: 'token',
+      tokenId: auth.tokenId,
+      userId: auth.userId,
+      name: auth.tokenName,
+      role: auth.role,
     });
     return next();
   });
 
-  /** Guard privileged routes: tokens always pass; sessions need the admin role. */
+  /**
+   * `GET /auth/me` describes the caller. The SPA uses it to validate a stored
+   * token on boot, so a revoked or demoted credential is caught immediately
+   * instead of on the first failed write. Registered after the middleware
+   * above, which is what populates `auth`.
+   *
+   * For a user-bound token this includes the owner's identity, so the client
+   * can render the signed-in user without a second, permission-sensitive call
+   * (listing users is admin-only, which would break the agent role).
+   */
+  api.get('/auth/me', async (c) => {
+    const p = c.get('auth');
+    let user: { id: number; email: string; name: string; role: string } | null = null;
+
+    if (p.userId != null) {
+      const row = await svc.getUser(db, p.userId);
+      if (row) user = { id: row.id, email: row.email, name: row.name, role: row.role };
+    }
+
+    return c.json({
+      source: p.source,
+      tokenId: p.tokenId,
+      userId: p.userId,
+      name: p.name,
+      role: p.role,
+      user,
+    });
+  });
+
+  /**
+   * Guard privileged routes. An unbound machine token always passes; a user-bound token needs the admin role.
+   */
   const admin: MiddlewareHandler<ApiEnv> = async (c, next) => {
     const principal = c.get('auth');
-    if (principal.source === 'token' || principal.role === 'admin') return next();
+    if (principal.role === 'admin') return next();
     return c.json({ error: 'admin role required' }, 403);
   };
 
@@ -205,10 +281,10 @@ export function apiRoutes(db: Db) {
     const parsed = createCommentSchema.safeParse(raw);
     if (!parsed.success) return c.json({ error: 'validation failed', issues: issues(parsed.error) }, 422);
 
-    // A logged-in user's identity wins over a body-supplied one; a machine
-    // token may attribute to anyone (or no one).
+    // A user-bound token attributes to its owner; an unbound machine token may
+    // attribute to anyone (or no one) via the request body.
     const principal = c.get('auth');
-    const input = principal.source === 'session'
+    const input = principal.userId != null
       ? { ...parsed.data, authorId: principal.userId, authorEmail: null }
       : parsed.data;
 
@@ -285,6 +361,50 @@ export function apiRoutes(db: Db) {
 
   api.get('/tags', async (c) => c.json({ items: await svc.listTags(db) }));
   api.get('/stats', async (c) => c.json(await svc.stats(db)));
+
+  // ---- Tokens (self-service) ---------------------------------------------
+
+  /**
+   * A user may manage their own tokens; an unbound machine token may not,
+   * because it has no owner to scope the listing to.
+   */
+  const ownTokens = (c: { get: (k: 'auth') => Principal }) => {
+    const p = c.get('auth');
+    return p.userId;
+  };
+
+  api.get('/tokens', async (c) => {
+    const userId = ownTokens(c);
+    if (userId == null) return c.json({ error: 'token is not bound to a user' }, 400);
+    return c.json({ items: await listTokens(db, userId) });
+  });
+
+  api.post('/tokens', async (c) => {
+    const userId = ownTokens(c);
+    if (userId == null) return c.json({ error: 'token is not bound to a user' }, 400);
+
+    const raw = await c.req.json().catch(() => null);
+    if (raw == null) return c.json({ error: 'invalid JSON body' }, 400);
+
+    const parsed = createTokenSchema.safeParse(raw);
+    if (!parsed.success) return c.json({ error: 'validation failed', issues: issues(parsed.error) }, 422);
+
+    // The plaintext is returned exactly once; only the hash is stored.
+    const token = await createToken(db, parsed.data.name, userId);
+    return c.json({ token, name: parsed.data.name }, 201);
+  });
+
+  api.delete('/tokens/:id', async (c) => {
+    const userId = ownTokens(c);
+    if (userId == null) return c.json({ error: 'token is not bound to a user' }, 400);
+
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+
+    // Scoped by owner: one user cannot revoke another user's token.
+    if (!(await revokeToken(db, id, userId))) return c.json({ error: 'token not found' }, 404);
+    return c.body(null, 204);
+  });
 
   return api;
 }
