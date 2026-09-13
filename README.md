@@ -2,8 +2,8 @@
 
 A lightweight, API-first ticketing system. One command to run.
 
-> **Status: v0.1 in progress.** Ticket CRUD, comments, tags, assignment, and the
-> REST API all work. Email notification is not built yet.
+> **Status: v0.1 done.** Ticket CRUD, comments, tags, assignment, user roles, and
+> the REST API all work. Email notification is a non-goal — see below.
 
 ## What this is
 
@@ -46,13 +46,21 @@ missing features:
 - Complex SLA engines
 - Knowledge base
 - Telephony / IVR integration
+- **Outbound email** — no notification on create / assign / reply, and no SMTP configuration
 
 If you need those today, use [Zammad](https://zammad.org/), [OTRS](https://otrs.com/), or
 [GLPI](https://glpi-project.org/). They are good at it. `liteticket` is not trying to be them.
 
+Email is a deliberate omission rather than an unfinished item. Sending mail means an SMTP
+dependency, credentials to store, retries, bounce handling, and a template per event — a large
+surface that would stop this from being a system you can run with one command. Agents see new work
+in the ticket list; the API is there if you want to wire up a notifier of your own.
+
 ## Roadmap
 
 ### v0.1 — the minimum that is actually useful
+
+Everything here is done.
 
 - [x] Ticket CRUD, list, and detail views
 - [x] Status flow: open / pending / closed
@@ -63,7 +71,6 @@ If you need those today, use [Zammad](https://zammad.org/), [OTRS](https://otrs.
 - [x] Comments — internal note and public reply
 - [x] REST API with bearer-token auth
 - [x] Self-service API tokens (mint and revoke your own)
-- [ ] Email notification on create / assign / reply
 - [x] Web UI that works without configuration
 
 ### Later
