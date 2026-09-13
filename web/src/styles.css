@@ -236,6 +236,33 @@ button.danger:hover:not(:disabled) {
   background: #fef2f2;
 }
 
+/* The armed state of a destructive action. Solid red, unlike the outlined
+   resting state: the two steps must not look like the same button twice. */
+button.danger.solid {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+button.danger.solid:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
+/* Asks in the row it belongs to. Kept on one line: the question is longer than
+   the button it replaces, and wrapping it in a narrow 操作 column stacked the
+   buttons into a tall column that blew up the row height. */
+.confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.confirm-ask {
+  color: var(--danger);
+  font-size: 13px;
+}
+
 button.link {
   border: none;
   background: none;

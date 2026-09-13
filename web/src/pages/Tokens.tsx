@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.ts';
 import type { TokenRow } from '../api.ts';
-import { Empty, ErrorBox, Field, Loading, formatTime } from '../ui.tsx';
+import { Empty, ErrorBox, ConfirmButton, Field, Loading, formatTime } from '../ui.tsx';
 
 /**
  * Self-service API tokens (「令牌」 in the Chinese UI, to match the wording the
@@ -54,7 +54,6 @@ export function TokensPage() {
   }
 
   async function revoke(id: number) {
-    if (!confirm('吊销这个令牌？使用它的程序会立即失去访问权限。')) return;
     setError(null);
     try {
       await api.revokeToken(id);
@@ -121,7 +120,7 @@ export function TokensPage() {
                 <th>用途</th>
                 <th style={{ width: 150 }}>创建时间</th>
                 <th style={{ width: 150 }}>最后使用</th>
-                <th style={{ width: 90 }}>操作</th>
+                <th style={{ width: 200 }}>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -132,9 +131,11 @@ export function TokensPage() {
                   <td className="small muted">{formatTime(t.createdAt)}</td>
                   <td className="small muted">{t.lastUsedAt ? formatTime(t.lastUsedAt) : '从未使用'}</td>
                   <td>
-                    <button className="danger" onClick={() => void revoke(t.id)}>
-                      吊销
-                    </button>
+                    <ConfirmButton
+                      label="吊销"
+                      question="吊销后立即失效"
+                      onConfirm={() => revoke(t.id)}
+                    />
                   </td>
                 </tr>
               ))}

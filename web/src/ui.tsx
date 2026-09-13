@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
 export const STATUS_LABEL: Record<string, string> = {
@@ -67,6 +67,81 @@ export function Field({ label, children }: { label: string; children: ReactNode 
       <label>{label}</label>
       {children}
     </div>
+  );
+}
+
+/**
+ * A destructive action that asks in place.
+ *
+ * This replaced window.confirm, which on a Chinese UI renders a browser-chrome
+ * dialog with English buttons and no styling — it looked like a different
+ * application. Confirming inline also keeps the question next to the thing it
+ * is about, and because it is a two-step button rather than a modal, it cannot
+ * be dismissed by a stray Escape the way the create drawer can. That
+ * distinction is the point: creating is cheap and reversible, deleting is not.
+ *
+ * The confirm step reverts on blur, so a half-pressed delete button does not
+ * sit armed in the row while the user does something else.
+ */
+export function ConfirmButton({
+  label,
+  question,
+  onConfirm,
+  disabled,
+}: {
+  label: string;
+  question: string;
+  onConfirm: () => void | Promise<void>;
+  disabled?: boolean;
+}) {
+  const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const wrap = useRef<HTMLSpanElement>(null);
+
+  // Move focus to the confirm step: the user asked to delete, and a keyboard
+  // user must not have to tab to the new button that just appeared.
+  useEffect(() => {
+    if (armed) wrap.current?.querySelector('button')?.focus();
+  }, [armed]);
+
+  async function confirm() {
+    setBusy(true);
+    try {
+      await onConfirm();
+    } catch {
+      // The callers surface their own failures through the page's error box;
+      // swallowing here only stops a rejected promise from escaping the click
+      // handler as an unhandled rejection.
+    } finally {
+      setBusy(false);
+      setArmed(false);
+    }
+  }
+
+  if (!armed) {
+    return (
+      <button className="danger" onClick={() => setArmed(true)} disabled={disabled}>
+        {label}
+      </button>
+    );
+  }
+
+  return (
+    <span
+      className="confirm"
+      ref={wrap}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setArmed(false);
+      }}
+    >
+      <span className="confirm-ask">{question}</span>
+      <button className="danger solid" onClick={() => void confirm()} disabled={busy}>
+        {busy ? '删除中…' : '确认删除'}
+      </button>
+      <button onClick={() => setArmed(false)} disabled={busy}>
+        取消
+      </button>
+    </span>
   );
 }
 

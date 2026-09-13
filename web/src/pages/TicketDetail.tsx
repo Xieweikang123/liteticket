@@ -4,6 +4,7 @@ import { api } from '../api.ts';
 import type { AuthUser, Comment, Ticket } from '../api.ts';
 import { useAuth, can } from '../auth.tsx';
 import {
+  ConfirmButton,
   Empty,
   ErrorBox,
   Field,
@@ -71,7 +72,6 @@ export function TicketDetailPage() {
   }
 
   async function remove() {
-    if (!confirm(`确定删除工单 #${id}？此操作不可恢复。`)) return;
     try {
       await api.deleteTicket(id);
       navigate('/');
@@ -173,9 +173,13 @@ export function TicketDetailPage() {
             </Field>
           </div>
           {can(permissions, 'tickets.delete') && (
-            <button className="danger" onClick={remove} style={{ marginTop: 18 }}>
-              删除工单
-            </button>
+            <span style={{ marginTop: 18 }}>
+              <ConfirmButton
+                label="删除工单"
+                question="不可恢复"
+                onConfirm={remove}
+              />
+            </span>
           )}
         </div>
       </div>

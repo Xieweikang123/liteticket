@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.ts';
 import type { AuthUser, RoleRow } from '../api.ts';
 import { useAuth, can } from '../auth.tsx';
-import { Empty, ErrorBox, Drawer, Field, Loading, formatTime } from '../ui.tsx';
+import { Empty, ErrorBox, ConfirmButton, Drawer, Field, Loading, formatTime } from '../ui.tsx';
 
 type Row = AuthUser & { createdAt: string };
 
@@ -57,7 +57,7 @@ export function UsersPage() {
                 <th>邮箱</th>
                 <th style={{ width: 110 }}>角色</th>
                 <th style={{ width: 140 }}>创建时间</th>
-                {manage && <th style={{ width: 260 }}>操作</th>}
+                {manage && <th style={{ width: 320 }}>操作</th>}
               </tr>
             </thead>
             <tbody>
@@ -101,7 +101,6 @@ function UserRow({
   const [editing, setEditing] = useState(false);
 
   async function remove() {
-    if (!confirm(`删除用户 ${row.name}？其名下工单的负责人会被置空。`)) return;
     onError(null);
     try {
       await api.deleteUser(row.id);
@@ -135,9 +134,11 @@ function UserRow({
           <td>
             <div className="row">
               <button onClick={() => setEditing(true)}>编辑</button>
-              <button className="danger" onClick={remove}>
-                删除
-              </button>
+              <ConfirmButton
+                label="删除"
+                question="确认删除？"
+                onConfirm={remove}
+              />
             </div>
           </td>
         )}
