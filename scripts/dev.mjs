@@ -4,6 +4,11 @@
  * `pnpm dev` should just work from a fresh clone: install check, database
  * bootstrap, free-port selection, browser open. Everything a first-time user
  * would otherwise have to discover by reading the README.
+ *
+ * Two processes run side by side: the API (tsx watch) and the Vite dev server
+ * for the React client. Vite is what you open — it proxies /api to the API
+ * port, so the browser only ever talks to one origin and there is no CORS
+ * surface in dev.
  */
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -70,13 +75,26 @@ if (port === null) {
   process.exit(1);
 }
 
-const url = `http://127.0.0.1:${port}`;
+const preferredWeb = Number.parseInt(process.env.WEB_PORT ?? '5173', 10);
+const webPort = await findPort(Number.isFinite(preferredWeb) ? preferredWeb : 5173, 20);
+
+if (webPort === null) {
+  console.error(yellow('No free port found for the Vite dev server.'));
+  console.error(`Set one explicitly, e.g. ${bold('$env:WEB_PORT=5200; pnpm dev')}`);
+  process.exit(1);
+}
+
+const apiUrl = `http://127.0.0.1:${port}`;
+const url = `http://127.0.0.1:${webPort}`;
 
 // The port must be exported before the server module reads it.
 process.env.PORT = String(port);
-process.env.LITETICKET_SELF_BASE = url;
+process.env.LITETICKET_SELF_BASE = apiUrl;
 // The launcher already printed the banner; suppress the server's duplicate.
 process.env.LITETICKET_QUIET_BANNER = '1';
+// Vite proxies /api here, so the client works on the Vite origin in dev.
+process.env.LITETICKET_API_TARGET = apiUrl;
+process.env.LITETICKET_WEB_PORT = String(webPort);
 
 /**
  * Report whether this boot will mint a token. The server prints it once; this
@@ -100,10 +118,10 @@ const hadToken = (await existingTokenCount()) > 0;
 log('');
 log(`  ${bold('liteticket')} ${dim('0.1.0')}`);
 log(`  ${dim('web')}    ${cyan(url)}`);
-log(`  ${dim('api')}    ${cyan(`${url}/api`)}`);
+log(`  ${dim('api')}    ${cyan(`${apiUrl}/api`)}`);
 log(`  ${dim('db')}     ${dbFile}`);
 log('');
-log(dim('  starting…'));
+log(dim('  starting api + vite…'));
 log('');
 
 if (!hadToken) {
@@ -112,12 +130,12 @@ if (!hadToken) {
   log('');
 }
 
-// Open the browser once the server is actually accepting connections.
+// Open the browser once the Vite dev server is actually accepting connections.
 if (!noOpen) {
   void (async () => {
-    for (let i = 0; i < 100; i += 1) {
+    for (let i = 0; i < 200; i += 1) {
       try {
-        await fetch(`${url}/api/health`);
+        await fetch(url);
         break;
       } catch {
         await new Promise((r) => setTimeout(r, 150));
@@ -145,9 +163,10 @@ if (!noOpen) {
 //
 // The watch set is scoped with --include to src/ only. Watching the whole
 // project would restart the server on every SQLite write: WAL mode touches
-// data/*.db-shm per request, which looks like a source change.
+// data/*.db-shm per request, which looks like a source change. It also keeps
+// Vite's own file churn from restarting the API.
 const tsxEntry = join(root, 'node_modules', 'tsx', 'dist', 'cli.mjs');
-const child = spawn(
+const api = spawn(
   process.execPath,
   [tsxEntry, 'watch', '--include', 'src/**/*', 'src/server.ts'],
   {
@@ -157,8 +176,40 @@ const child = spawn(
   },
 );
 
-child.on('exit', (code) => process.exit(code ?? 0));
+// Vite's own JS entry, run the same way, for the same reason.
+const viteEntry = join(root, 'node_modules', 'vite', 'bin', 'vite.js');
+const web = spawn(
+  process.execPath,
+  [viteEntry, '--port', String(webPort), '--strictPort'],
+  {
+    cwd: root,
+    stdio: 'inherit',
+    env: process.env,
+  },
+);
+
+let exiting = false;
+
+/**
+ * If either process dies, stop the other: a half-running pair is worse than a
+ * clean exit, because the browser gets connection errors with no explanation.
+ */
+function shutdown(code) {
+  if (exiting) return;
+  exiting = true;
+  for (const child of [api, web]) {
+    if (child.exitCode === null) child.kill();
+  }
+  process.exitCode = code;
+}
+
+api.on('exit', (code) => shutdown(code ?? 1));
+web.on('exit', (code) => shutdown(code ?? 1));
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => child.kill(sig));
+  process.on(sig, () => {
+    for (const child of [api, web]) {
+      if (child.exitCode === null) child.kill(sig);
+    }
+  });
 }

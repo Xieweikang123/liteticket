@@ -45,27 +45,31 @@ async function api(path, init = {}) {
   return { status: res.status, body, res };
 }
 
-/** Log in and return the session cookie, or null when the credentials fail. */
+/**
+ * Log in and return a bearer token, or null when the credentials fail.
+ *
+ * The API is the only auth surface now: there is no login page and no session
+ * cookie, so authentication for a human and for a script is the same call.
+ */
 async function login(email, password) {
-  const res = await fetch(`${base}/login`, {
+  const res = await fetch(`${base}/api/auth/login`, {
     method: 'POST',
-    redirect: 'manual',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ email, password }).toString(),
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ email, password, tokenName: 'verify' }),
   });
-  const setCookie = res.headers.get('set-cookie') ?? '';
-  const match = setCookie.match(/lt_session=([^;]+)/);
-  return match ? `lt_session=${match[1]}` : null;
+  if (res.status !== 200) return null;
+  const body = await res.json().catch(() => null);
+  return body?.token ?? null;
 }
 
-/** GET a page as a browser would, optionally with a session cookie. */
-async function page(path, cookie) {
+/** GET a path as a browser would. */
+async function page(path, token) {
   const res = await fetch(`${base}${path}`, {
     redirect: 'manual',
-    headers: cookie ? { Cookie: cookie } : {},
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   const html = res.status === 200 ? await res.text() : '';
-  return { status: res.status, html, location: res.headers.get('location') };
+  return { status: res.status, html, location: res.headers.get('location'), type: res.headers.get('content-type') ?? '' };
 }
 
 console.log(`\nverifying ${base}\n`);
@@ -88,28 +92,38 @@ console.log(`\nverifying ${base}\n`);
   check('good token accepted', r.status === 200, `status ${r.status}`);
 }
 
-// ---- login & sessions ----------------------------------------------------
-let cookie;
+// ---- login -----------------------------------------------------------------
+let sessionToken;
 {
-  const c = await login(adminEmail, adminPassword);
-  cookie = c;
-  check('admin can log in', Boolean(c), 'no session cookie returned');
+  const t = await login(adminEmail, adminPassword);
+  sessionToken = t;
+  check('admin can log in and receive a token', Boolean(t), 'no token returned');
 }
 {
-  const c = await login(adminEmail, 'definitely-wrong');
-  check('wrong password rejected', c === null);
+  const t = await login(adminEmail, 'definitely-wrong');
+  check('wrong password rejected', t === null);
 }
 {
-  const r = await api('/api/tickets', { headers: cookie ? { Cookie: cookie } : {} });
-  check('session accepted on the API', r.status === 200, `status ${r.status}`);
+  const r = await api('/api/auth/me', { headers: { Authorization: `Bearer ${sessionToken}` } });
+  check('login token authenticates', r.status === 200, `status ${r.status}`);
+  check('login token reports the owner role', r.body?.role === 'admin', `role ${r.body?.role}`);
+  check('login token is bound to a user', typeof r.body?.userId === 'number', `userId ${r.body?.userId}`);
+  check('login token carries the user identity', r.body?.user?.email === adminEmail, `email ${r.body?.user?.email}`);
 }
 {
+  // The SPA shell is public: the client redirects to /login itself once it
+  // finds no token, so the server no longer needs to.
   const p = await page('/', undefined);
-  check('logged-out UI redirects to /login', p.status === 303 && (p.location ?? '').includes('/login'), `status ${p.status}`);
+  check('SPA shell is served without auth', p.status === 200 && p.html.includes('id="root"'), `status ${p.status}`);
 }
 {
+  const p = await page('/tickets/1', undefined);
+  check('deep link serves the SPA shell', p.status === 200 && p.html.includes('id="root"'), `status ${p.status}`);
+}
+{
+  // There is no server-rendered login page any more.
   const p = await page('/login', undefined);
-  check('login page is public', p.status === 200 && p.html.includes('登录'), `status ${p.status}`);
+  check('no legacy server login page', !p.html.includes('name="password"'), 'found a server-rendered password form');
 }
 
 // ---- create --------------------------------------------------------------
@@ -281,71 +295,88 @@ let userId;
   check('stats counts correctly', r.body?.total >= 1, JSON.stringify(r.body));
 }
 
-// ---- UI surface ----------------------------------------------------------
+// ---- client (SPA) surface ------------------------------------------------
+//
+// The server no longer renders any HTML for the app: it serves the built
+// React bundle and a catch-all that returns index.html so client-side routes
+// survive a hard refresh. Content checks live in the browser suite
+// (scripts/probe-ui.mjs), which drives a real browser.
 {
-  const p = await page('/', cookie);
-  check('list page renders', p.status === 200 && p.html.includes('liteticket'), `status ${p.status}`);
-  check('page includes htmx', p.html.includes('/static/htmx.min.js'));
-  check('page renders ticket row', p.html.includes('打印机无法连接'));
-  check('nav shows the logged-in user', p.html.includes('退出'));
+  const p = await page('/', undefined);
+  check('SPA shell renders', p.status === 200 && p.html.includes('id="root"'), `status ${p.status}`);
+  check('SPA shell loads a bundled script', /\/assets\/index-[\w-]+\.js/.test(p.html));
+  check('no htmx is shipped any more', !p.html.includes('htmx'));
 }
 {
+  // The htmx bundle is deleted from the repo. The catch-all may answer this
+  // path with the SPA shell, so assert the thing that actually matters: the
+  // library is not shipped and the shell never references it.
   const res = await fetch(`${base}/static/htmx.min.js`);
-  check('htmx asset served', res.status === 200);
+  const body = await res.text();
+  const looksLikeHtmx = body.includes('htmx') && body.length > 5000;
+  check('legacy htmx asset is no longer shipped', !looksLikeHtmx, `status ${res.status}, ${body.length} bytes`);
 }
 {
-  const p = await page(`/tickets/${ticketId}`, cookie);
-  check('detail page renders', p.status === 200 && p.html.includes('已联系供应商'), `status ${p.status}`);
-  check('detail page shows internal note to agent', p.html.includes('内部：客户很难缠'));
+  const p = await page('/users', undefined);
+  check('client route /users falls back to the shell', p.status === 200 && p.html.includes('id="root"'), `status ${p.status}`);
 }
 {
-  const p = await page('/new', cookie);
-  check('new ticket page renders', p.status === 200 && p.html.includes('新建工单'), `status ${p.status}`);
+  const p = await page(`/tickets/${ticketId}`, undefined);
+  check('client route /tickets/:id falls back to the shell', p.status === 200 && p.html.includes('id="root"'), `status ${p.status}`);
 }
+
+// ---- token self-service ---------------------------------------------------
 {
-  const p = await page('/api-docs', cookie);
-  check('api docs page renders', p.status === 200, `status ${p.status}`);
-}
-{
-  const p = await page('/users', cookie);
-  check('users page renders for admin', p.status === 200 && p.html.includes('客服小李'), `status ${p.status}`);
-}
-{
-  const res = await fetch(`${base}/ui/tickets`, { headers: { Cookie: cookie } });
-  const html = await res.text();
-  check('htmx fragment returns rows without <html>', !html.includes('<html') && html.includes('ticket-list'));
-}
-{
-  const res = await fetch(`${base}/ui/tickets/${ticketId}/status`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookie },
-    body: 'status=closed',
+  const r = await api('/api/tokens', { headers: { Authorization: `Bearer ${sessionToken}` } });
+  check('a user can list their own tokens', r.status === 200, `status ${r.status}`);
+  check('token list never leaks a hash', !JSON.stringify(r.body ?? {}).includes('tokenHash'));
+
+  const made = await api('/api/tokens', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${sessionToken}`, 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ name: 'verify-self-issued' }),
   });
-  const html = await res.text();
-  check('htmx status swap returns row fragment', res.status === 200 && html.includes(`row-${ticketId}`));
-  check('fragment reflects new status', html.includes('s-closed'));
+  check('a user can mint their own token', made.status === 201, `status ${made.status}`);
+
+  const own = made.body?.token;
+  if (own) {
+    const used = await api('/api/auth/me', { headers: { Authorization: `Bearer ${own}` } });
+    check('self-issued token works', used.status === 200, `status ${used.status}`);
+    check('self-issued token inherits the admin role', used.body?.role === 'admin', `role ${used.body?.role}`);
+
+    const listed = await api('/api/tokens', { headers: { Authorization: `Bearer ${sessionToken}` } });
+    const row = listed.body?.items?.find((t) => t.name === 'verify-self-issued');
+    if (row) {
+      const del = await api(`/api/tokens/${row.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${sessionToken}` },
+      });
+      check('a user can revoke their own token', del.status === 204, `status ${del.status}`);
+      const after = await api('/api/auth/me', { headers: { Authorization: `Bearer ${own}` } });
+      check('revoked token stops working', after.status === 401, `status ${after.status}`);
+    } else {
+      check('self-issued token appears in the list', false, 'not found');
+    }
+  }
 }
 {
-  const res = await fetch(`${base}/ui/tickets/${ticketId}/status`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookie },
-    body: 'status=bogus',
-  });
-  check('invalid status rejected with 400', res.status === 400, `status ${res.status}`);
+  // The bootstrap machine token has no owner, so it cannot manage tokens.
+  const r = await api('/api/tokens', { headers: auth });
+  check('an unbound machine token cannot list tokens', r.status === 400, `status ${r.status}`);
 }
 
 // ---- roles & guards ------------------------------------------------------
 {
-  const r = await api('/api/users', { headers: cookie ? { Cookie: cookie } : {} });
-  check('session can list users', r.status === 200, `status ${r.status}`);
+  const r = await api('/api/users', { headers: { Authorization: `Bearer ${sessionToken}` } });
+  check('a login token can list users', r.status === 200, `status ${r.status}`);
 }
 {
   const r = await api('/api/users', {
     method: 'POST',
-    headers: { ...jsonAuth, Cookie: cookie },
+    headers: { Authorization: `Bearer ${sessionToken}`, 'Content-Type': 'application/json; charset=utf-8' },
     body: JSON.stringify({ email: 'nope@example.com', name: 'nope', role: 'admin' }),
   });
-  check('admin session may create a user', r.status === 201, `status ${r.status}`);
+  check('admin token may create a user', r.status === 201, `status ${r.status}`);
   if (r.body?.id) await api(`/api/users/${r.body.id}`, { method: 'DELETE', headers: auth });
 }
 {
@@ -353,7 +384,7 @@ let userId;
   check('deleting a missing user returns 404', r.status === 404, `status ${r.status}`);
 }
 {
-  // An agent session must not be able to administer.
+  // An agent token must not be able to administer.
   const created = await api('/api/users', {
     method: 'POST',
     headers: jsonAuth,
@@ -363,34 +394,60 @@ let userId;
   check('agent user created with role', created.body?.role === 'agent', JSON.stringify(created.body?.role));
   check('password hash is never returned', created.body && !('passwordHash' in created.body));
 
-  const agentCookie = await login('plain-agent@example.com', 'secret');
-  check('agent can log in', Boolean(agentCookie));
+  const agentToken = await login('plain-agent@example.com', 'secret');
+  check('agent can log in', Boolean(agentToken));
 
-  if (agentCookie) {
+  if (agentToken) {
+    const agentMe = await api('/api/auth/me', { headers: { Authorization: `Bearer ${agentToken}` } });
+    check('agent token reports the agent role', agentMe.body?.role === 'agent', `role ${agentMe.body?.role}`);
+
     const denied = await api('/api/users', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8', Cookie: agentCookie },
+      headers: { Authorization: `Bearer ${agentToken}`, 'Content-Type': 'application/json; charset=utf-8' },
       body: JSON.stringify({ email: 'x@example.com', name: 'x' }),
     });
     check('agent cannot create users (403)', denied.status === 403, `status ${denied.status}`);
 
-    const del = await api(`/api/tickets/${ticketId}`, { method: 'DELETE', headers: { Cookie: agentCookie } });
+    const del = await api(`/api/tickets/${ticketId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${agentToken}` },
+    });
     check('agent cannot delete tickets (403)', del.status === 403, `status ${del.status}`);
 
-    const usersPage = await page('/users', agentCookie);
-    check('agent cannot open /users (403)', usersPage.status === 403, `status ${usersPage.status}`);
-
-    const ok = await api('/api/tickets', { headers: { Cookie: agentCookie } });
+    const ok = await api('/api/tickets', { headers: { Authorization: `Bearer ${agentToken}` } });
     check('agent can still read tickets', ok.status === 200, `status ${ok.status}`);
 
-    // Changing the password must invalidate the already-issued session.
+    // The token inherits the role live, so a demotion applies immediately.
+    await api(`/api/users/${agentId}`, {
+      method: 'PATCH',
+      headers: jsonAuth,
+      body: JSON.stringify({ role: 'admin' }),
+    });
+    const promoted = await api('/api/auth/me', { headers: { Authorization: `Bearer ${agentToken}` } });
+    check(
+      'a role change applies to an existing token immediately',
+      promoted.body?.role === 'admin',
+      `role ${promoted.body?.role}`,
+    );
+    await api(`/api/users/${agentId}`, {
+      method: 'PATCH',
+      headers: jsonAuth,
+      body: JSON.stringify({ role: 'agent' }),
+    });
+
+    // A password change must invalidate the tokens minted by the old password.
+    // (Tokens are deleted with their owner, not by a password marker, so this
+    // asserts the documented behaviour: old *login* tokens are revoked.)
     await api(`/api/users/${agentId}`, {
       method: 'PATCH',
       headers: jsonAuth,
       body: JSON.stringify({ password: 'rotated' }),
     });
-    const stale = await api('/api/tickets', { headers: { Cookie: agentCookie } });
-    check('password change invalidates old session', stale.status === 401, `status ${stale.status}`);
+    const stale = await api('/api/auth/me', { headers: { Authorization: `Bearer ${agentToken}` } });
+    check('password change revokes tokens issued from the old password', stale.status === 401, `status ${stale.status}`);
+
+    const relogin = await login('plain-agent@example.com', 'rotated');
+    check('the account can log in with the new password', Boolean(relogin));
   }
 
   if (agentId) await api(`/api/users/${agentId}`, { method: 'DELETE', headers: auth });

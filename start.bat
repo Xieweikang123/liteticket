@@ -90,6 +90,12 @@ if not exist "node_modules\hono" (
   goto :doinstall
 )
 
+if not exist "node_modules\vite" (
+  echo   Client build tooling is missing.
+  echo.
+  goto :doinstall
+)
+
 goto :run
 
 :doinstall
