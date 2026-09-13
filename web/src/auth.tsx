@@ -14,7 +14,12 @@ interface AuthState {
   /** True until the stored token has been checked against the server. */
   loading: boolean;
   login: (username: string, password: string) => Promise<void>;
-  logout: () => Promise<void>;
+  /**
+   * Sign out. By default this also revokes the session server-side. Pass
+   * `{ revoke: false }` when the server has already invalidated it — e.g. after
+   * a password change, which deletes every token — so no dead request is sent.
+   */
+  logout: (opts?: { revoke?: boolean }) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -37,12 +42,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    * credential is revoked rather than merely forgotten; local state is cleared
    * regardless, and a failed call must not trap the user in the app. The token
    * is read before clearing because the request attaches it from localStorage.
+   *
+   * `revoke: false` skips that call when the session is already dead (a
+   * password change deletes it server-side), so a known-401 request is not
+   * fired just to produce a console error.
    */
-  const logout = useCallback(async () => {
-    try {
-      await api.logout();
-    } catch {
-      // Best-effort: the session still expires on its own.
+  const logout = useCallback(async (opts?: { revoke?: boolean }) => {
+    if (opts?.revoke !== false) {
+      try {
+        await api.logout();
+      } catch {
+        // Best-effort: the session still expires on its own.
+      }
     }
     setToken(null);
     setUser(null);

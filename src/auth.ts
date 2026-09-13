@@ -218,11 +218,15 @@ export async function purgeExpiredTokens(db: Db): Promise<void> {
     .where(and(eq(tokens.kind, 'session'), lt(tokens.expiresAt, new Date().toISOString())));
 }
 
-/** Revoke a single token by id. Scoped by owner so one user cannot drop another's. */
+/**
+ * Revoke a single *api* token by id. Scoped by owner so one user cannot drop
+ * another's. Sessions are not addressable here: signing out goes through
+ * `/auth/logout`, and a session is not something the token page manages.
+ */
 export async function revokeToken(db: Db, tokenId: number, ownerId?: number): Promise<boolean> {
   const rows = await db.select().from(tokens).where(eq(tokens.id, tokenId)).limit(1);
   const row = rows[0];
-  if (!row) return false;
+  if (!row || row.kind !== 'api') return false;
   if (ownerId !== undefined && row.userId !== ownerId) return false;
 
   await db.delete(tokens).where(eq(tokens.id, tokenId));

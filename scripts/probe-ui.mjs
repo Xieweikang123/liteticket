@@ -157,6 +157,13 @@ try {
   await page.waitForSelector('form:has-text("签发新令牌")', { timeout: 8000 });
   check('tokens page rendered', (await page.locator('form:has-text("签发新令牌")').count()) > 0);
 
+  // The login that got us here is a session, not a named credential: it must
+  // not appear among the tokens the page manages.
+  check(
+    'the login session is not listed on the token page',
+    (await page.locator('td:has-text("login-")').count()) === 0,
+  );
+
   const tokenName = `ui-probe-${Date.now()}`;
   await page.fill('form:has-text("签发新令牌") input', tokenName);
   await page.click('form:has-text("签发新令牌") button[type="submit"]');

@@ -30,10 +30,10 @@ export function AccountPage() {
     setError(null);
     try {
       await api.changePassword(currentPassword, newPassword);
-      // The change revoked this session's token, so clear local state and let
-      // the app land on the login page rather than 401 on the next request.
+      // The change revoked this session's token server-side, so clear local
+      // state without a second (dead) logout request.
       setDone(true);
-      logout();
+      logout({ revoke: false });
     } catch (err) {
       setError(err);
     } finally {

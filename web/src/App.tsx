@@ -43,7 +43,7 @@ function TopBar() {
           <>
             <span className="who-name">{user.name}</span>
             {admin && <span className="who-role">管理员</span>}
-            <button className="link" onClick={logout}>
+            <button className="link" onClick={() => void logout()}>
               退出
             </button>
           </>

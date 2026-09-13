@@ -348,6 +348,13 @@ let userId;
   check('a user can list their own tokens', r.status === 200, `status ${r.status}`);
   check('token list never leaks a hash', !JSON.stringify(r.body ?? {}).includes('tokenHash'));
 
+  // A login mints a `session`, which is an implementation detail of signing
+  // in: it must not show up as one of the user's named API credentials.
+  const me = await api('/api/auth/me', { headers: { Authorization: `Bearer ${sessionToken}` } });
+  const sessionId = me.body?.tokenId;
+  const leaked = (r.body?.items ?? []).some((t) => t.id === sessionId);
+  check('a login session is not listed as an API token', !leaked, `session id ${sessionId}`);
+
   const made = await api('/api/tokens', {
     method: 'POST',
     headers: { Authorization: `Bearer ${sessionToken}`, 'Content-Type': 'application/json; charset=utf-8' },
@@ -380,6 +387,60 @@ let userId;
   // The bootstrap machine token has no owner, so it cannot manage tokens.
   const r = await api('/api/tokens', { headers: auth });
   check('an unbound machine token cannot list tokens', r.status === 400, `status ${r.status}`);
+}
+
+// ---- logout revokes the session ------------------------------------------
+{
+  // A separate login so killing it does not disturb `sessionToken` below.
+  const throwaway = await login(adminUsername, adminPassword);
+  check('logout fixture can log in', Boolean(throwaway));
+
+  if (throwaway) {
+    const before = await api('/api/auth/me', { headers: { Authorization: `Bearer ${throwaway}` } });
+    check('session works before logout', before.status === 200, `status ${before.status}`);
+
+    const out = await api('/api/auth/logout', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${throwaway}` },
+    });
+    check('logout returns 204', out.status === 204, `status ${out.status}`);
+
+    const after = await api('/api/auth/me', { headers: { Authorization: `Bearer ${throwaway}` } });
+    check('logout revokes the session server-side', after.status === 401, `status ${after.status}`);
+
+    // Idempotent: presenting the now-dead token again is a 401, and an
+    // unknown/revoked token must not leak whether it existed.
+    const again = await api('/api/auth/logout', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${throwaway}` },
+    });
+    check('a second logout is rejected with 401', again.status === 401, `status ${again.status}`);
+  }
+}
+{
+  // Logging out a session must not cancel the user's long-lived API tokens:
+  // they are deliberate credentials, revoked only from the token page.
+  const session = await login(adminUsername, adminPassword);
+  const apiToken = await api('/api/tokens', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${session}`, 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ name: 'verify-survives-logout' }),
+  });
+  const survivor = apiToken.body?.token;
+  await api('/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${session}` } });
+  if (survivor) {
+    const r = await api('/api/auth/me', { headers: { Authorization: `Bearer ${survivor}` } });
+    check('an API token survives logout', r.status === 200, `status ${r.status}`);
+    const listed = await api('/api/tokens', { headers: { Authorization: `Bearer ${survivor}` } });
+    const row = listed.body?.items?.find((t) => t.name === 'verify-survives-logout');
+    if (row) {
+      await api(`/api/tokens/${row.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${survivor}` },
+      });
+    }
+  }
+  check('survivor API token was minted', Boolean(survivor));
 }
 
 // ---- roles & guards ------------------------------------------------------
