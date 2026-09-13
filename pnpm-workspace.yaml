@@ -1,0 +1,12 @@
+# pnpm 11 reads build-script approvals from here (not from package.json).
+#
+# esbuild backs drizzle-kit and tsx, so it must build.
+# better-sqlite3 is set to false explicitly: it is not a dependency of this
+# project (we use @libsql/client, which ships prebuilt binaries), but pnpm
+# still finds it in the shared store and reports an "ignored build" error
+# unless it is explicitly declined here.
+allowBuilds:
+  esbuild: true
+  better-sqlite3: false
+minimumReleaseAgeExclude:
+  - zod@4.6.4

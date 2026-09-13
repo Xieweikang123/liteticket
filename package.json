@@ -1,0 +1,42 @@
+{
+  "name": "liteticket",
+  "version": "0.1.0",
+  "description": "A lightweight, API-first ticketing system. One command to run.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "liteticket": "./bin/liteticket.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "drizzle"
+  ],
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:no-open": "node scripts/dev.mjs --no-open",
+    "reset": "node scripts/dev.mjs --reset",
+    "start": "node bin/liteticket.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "verify": "node scripts/verify.mjs",
+    "db:generate": "drizzle-kit generate",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.5",
+    "@libsql/client": "^0.18.0",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.13.7",
+    "zod": "^4.6.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,15 @@
+# Normalize line endings in the repository. On Windows, git otherwise reports
+# "LF will be replaced by CRLF" for every text file and can flip endings on
+# checkout, which produces spurious diffs.
+* text=auto eol=lf
+
+# Windows batch files must keep CRLF or cmd.exe can misparse them.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets must never be normalized.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
