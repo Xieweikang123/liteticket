@@ -14,7 +14,6 @@ CREATE TABLE `__new_comments` (
 INSERT INTO `__new_comments`("id", "ticket_id", "body", "author_id", "author_email", "is_internal", "created_at") SELECT "id", "ticket_id", "body", "author_id", "author_email", "is_internal", "created_at" FROM `comments`;--> statement-breakpoint
 DROP TABLE `comments`;--> statement-breakpoint
 ALTER TABLE `__new_comments` RENAME TO `comments`;--> statement-breakpoint
-PRAGMA foreign_keys=ON;--> statement-breakpoint
 CREATE INDEX `comments_ticket_idx` ON `comments` (`ticket_id`);--> statement-breakpoint
 CREATE TABLE `__new_roles` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
@@ -91,3 +90,6 @@ DROP TABLE `users`;--> statement-breakpoint
 ALTER TABLE `__new_users` RENAME TO `users`;--> statement-breakpoint
 CREATE UNIQUE INDEX `users_username_unique` ON `users` (`username`);--> statement-breakpoint
 CREATE UNIQUE INDEX `users_email_unique` ON `users` (`email`);
+
+--> statement-breakpoint
+PRAGMA foreign_keys=ON;

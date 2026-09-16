@@ -17,6 +17,7 @@ export const PERMISSIONS = [
   'users.read',
   'users.manage',
   'roles.manage',
+  'menus.manage',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -48,6 +49,38 @@ export const roles = sqliteTable(
       .default(sqlNow()),
   },
   (t) => [uniqueIndex('roles_name_unique').on(t.name)],
+);
+
+/**
+ * The top navigation, as data rather than markup.
+ *
+ * Each row is one tab: where it points, what it is called, and who may see it.
+ * `permission` is optional — null means any signed-in user sees the tab, which
+ * is how 工单 and 我的令牌 stay visible to everyone. Built-in tabs are seeded
+ * from code (`SYSTEM_MENUS`) and reconciled on boot, the same way roles are, so
+ * an upgrade that adds a tab does not need a migration; `isSystem` marks those
+ * rows and the API refuses to delete them, since the SPA route they target
+ * still exists.
+ *
+ * `sort` orders the tabs explicitly rather than by id, so reordering does not
+ * depend on insertion history.
+ */
+export const menus = sqliteTable(
+  'menus',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    name: text('name').notNull(),
+    label: text('label').notNull(),
+    path: text('path').notNull(),
+    permission: text('permission').$type<Permission | null>(),
+    sort: integer('sort').notNull().default(0),
+    visible: integer('visible', { mode: 'boolean' }).notNull().default(true),
+    isSystem: integer('is_system', { mode: 'boolean' }).notNull().default(false),
+    createdAt: text('created_at')
+      .notNull()
+      .default(sqlNow()),
+  },
+  (t) => [uniqueIndex('menus_name_unique').on(t.name)],
 );
 
 /**
@@ -217,6 +250,8 @@ export type Comment = typeof comments.$inferSelect;
 export type Tag = typeof tags.$inferSelect;
 export type Setting = typeof settings.$inferSelect;
 export type Role = typeof roles.$inferSelect;
+export type Menu = typeof menus.$inferSelect;
+export type NewMenu = typeof menus.$inferInsert;
 
 export const TICKET_STATUSES = ['open', 'pending', 'closed'] as const;
 export const TICKET_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;

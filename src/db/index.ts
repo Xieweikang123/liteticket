@@ -43,6 +43,19 @@ const BOOTSTRAP_SQL = [
    )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS roles_name_unique ON roles (name)`,
 
+  `CREATE TABLE IF NOT EXISTS menus (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     name TEXT NOT NULL,
+     label TEXT NOT NULL,
+     path TEXT NOT NULL,
+     permission TEXT,
+     sort INTEGER NOT NULL DEFAULT 0,
+     visible INTEGER NOT NULL DEFAULT 1,
+     is_system INTEGER NOT NULL DEFAULT 0,
+     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS menus_name_unique ON menus (name)`,
+
   `CREATE TABLE IF NOT EXISTS users (
      id INTEGER PRIMARY KEY AUTOINCREMENT,
      username TEXT NOT NULL,

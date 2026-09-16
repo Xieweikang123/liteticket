@@ -73,6 +73,7 @@ Everything here is done.
 - [x] Comments — internal note and public reply
 - [x] REST API with bearer-token auth
 - [x] Self-service API tokens (mint and revoke your own)
+- [x] Menu management — the nav is data, scoped by permission
 - [x] Web UI that works without configuration
 
 ### Later
@@ -170,11 +171,21 @@ immediately. An unbound token is a machine credential and carries every
 permission. Routes marked with a permission reject tokens that lack it.
 
 The permission catalog is fixed in code (`tickets.read`, `tickets.write`,
-`tickets.delete`, `users.read`, `users.manage`, `roles.manage`). Roles are data:
-you can create, rename, and re-scope them, but you cannot invent a permission
-the server does not check. The built-in `admin` and `agent` roles are seeded
-from code on every boot and cannot be edited or deleted, which is what keeps an
-upgrade from locking the instance out.
+`tickets.delete`, `users.read`, `users.manage`, `roles.manage`, `menus.manage`).
+Roles are data: you can create, rename, and re-scope them, but you cannot invent
+a permission the server does not check. The built-in `admin` and `agent` roles
+are seeded from code on every boot and cannot be edited or deleted, which is what
+keeps an upgrade from locking the instance out.
+
+The top navigation is data too. Its tabs live in the `menus` table and are
+scoped by permission: a tab with `permission: null` is visible to every signed-in
+user, one gated on a permission is returned only to callers that hold it, and a
+hidden row is returned to no one. `GET /api/menus` returns the caller's filtered
+list (already safe to render); `GET /api/menus?all=true` returns every row for
+the management page and requires `menus.manage`. Built-in tabs are reconciled
+from code on boot: their `path` and `permission` are pinned to the route and the
+permission the page actually enforces, but their label, order, and visibility
+are yours to edit.
 
 | Method | Path | Notes |
 |---|---|---|
@@ -198,6 +209,11 @@ upgrade from locking the instance out.
 | `POST` | `/api/roles` | `roles.manage`; `name`, `label`, `permissions[]` |
 | `PATCH` | `/api/roles/:id` | `roles.manage`; `label`, `description`, `permissions[]` |
 | `DELETE` | `/api/roles/:id` | `roles.manage`; only when no user holds it |
+| `GET` | `/api/menus` | the caller's visible tabs (filtered by permission + visibility) |
+| `GET` | `/api/menus?all=true` | `menus.manage`; every tab, including hidden ones |
+| `POST` | `/api/menus` | `menus.manage`; `name`, `label`, `path`, `permission`, `sort` |
+| `PATCH` | `/api/menus/:id` | `menus.manage`; label / sort / visible / permission (path pinned for built-ins) |
+| `DELETE` | `/api/menus/:id` | `menus.manage`; custom menus only |
 | `GET` | `/api/tokens` | your own tokens (never the secret) |
 | `POST` | `/api/tokens` | mint one; the plaintext is returned **once** |
 | `DELETE` | `/api/tokens/:id` | revoke one of your own |
@@ -231,9 +247,9 @@ node scripts/probe-ui.mjs [baseUrl]                                      # brows
 ```
 
 `probe-ui.mjs` drives a real browser (Playwright, using the installed Chrome) through login, ticket
-creation, status changes, replies, internal notes, token minting, the agent role, logout, and deep
-links. It needs the seeded admin's credentials; set `PROBE_USERNAME` / `PROBE_PASSWORD` when they
-are not the defaults (`admin` / `1`).
+creation, status changes, replies, internal notes, token minting, menu editing, the agent role,
+logout, and deep links. It needs the seeded admin's credentials; set `PROBE_USERNAME` /
+`PROBE_PASSWORD` when they are not the defaults (`admin` / `1`).
 
 ### Layout
 
@@ -249,8 +265,8 @@ src/
   services/tickets.ts business rules — the single source of truth
 web/
   src/api.ts          typed client, the one place the token is attached
-  src/auth.tsx        session state and effective permissions, from /api/auth/me
-  src/pages/          tickets, ticket detail, users, roles, tokens, account, login
+  src/auth.tsx        session state + permissions from /api/auth/me, and the nav
+  src/pages/          tickets, ticket detail, users, roles, menus, tokens, account, login
 ```
 
 ## Contributing

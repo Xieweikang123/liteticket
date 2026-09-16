@@ -564,7 +564,9 @@ let userId;
       headers: { Authorization: `Bearer ${ownToken}`, 'Content-Type': 'application/json; charset=utf-8' },
       body: JSON.stringify({ currentPassword: 'not-it', newPassword: 'next' }),
     });
-    check('wrong current password rejected (401)', wrong.status === 401, `status ${wrong.status}`);
+    // 403 rather than 401: the client reads any 401 as an expired token and
+    // logs the user out, so a mistyped password must not use that code.
+    check('wrong current password rejected (403)', wrong.status === 403, `status ${wrong.status}`);
 
     const denied = await api(`/api/users/${selfId}`, {
       method: 'PATCH',
@@ -774,6 +776,153 @@ let viewerRoleId;
   });
   check('creating a user with an unknown role is rejected (422)', r.status === 422, `status ${r.status}`);
 }
+
+// ---- menus ---------------------------------------------------------------
+{
+  // The nav is data. Every signed-in caller can read it, and the server has
+  // already filtered it — the client renders the list as given.
+  const r = await api('/api/menus', { headers: auth });
+  check('everyone can read the menu list', r.status === 200 && Array.isArray(r.body?.items), `status ${r.status}`);
+  const names = (r.body?.items ?? []).map((m) => m.name);
+  check('built-in tickets tab is seeded', names.includes('tickets'), names.join(','));
+  check('ungated tabs are returned', names.includes('tokens'), names.join(','));
+  // 账号 is not a tab: it is reached from the user menu in the top bar. The
+  // /account route still exists — a menu row points at a route, it does not
+  // own it — so this asserts the nav, not the page.
+  check('the account tab is not in the nav', !names.includes('account'), names.join(','));
+}
+{
+  // `?all=true` is the management view and is gated on menus.manage.
+  const r = await api('/api/menus?all=true', { headers: auth });
+  check('menus.manage holder can list every menu', r.status === 200, `status ${r.status}`);
+  const roles = (r.body?.items ?? []).find((m) => m.name === 'roles');
+  check('permission-gated tab is marked system', roles?.isSystem === true);
+}
+let customMenuId;
+{
+  const r = await api('/api/menus', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ name: 'reports', label: '报表', path: '/reports', permission: 'tickets.read', sort: 99 }),
+  });
+  customMenuId = r.body?.id;
+  check('a custom menu can be created (201)', r.status === 201, `status ${r.status}`);
+  check('custom menu is not system', r.body?.isSystem === false);
+  check('custom menu permission roundtrips', r.body?.permission === 'tickets.read', String(r.body?.permission));
+}
+{
+  const r = await api('/api/menus', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ name: 'reports', label: '重复', path: '/x', permission: null }),
+  });
+  check('duplicate menu name rejected with 409', r.status === 409, `status ${r.status}`);
+}
+{
+  const r = await api('/api/menus', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ name: 'bad', label: 'x', path: 'reports', permission: null }),
+  });
+  check('relative menu path rejected with 422', r.status === 422, `status ${r.status}`);
+}
+{
+  const r = await api('/api/menus', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({ name: 'bad2', label: 'x', path: '//evil.example.com', permission: null }),
+  });
+  check('protocol-relative menu path rejected with 422', r.status === 422, `status ${r.status}`);
+}
+{
+  const r = await api(`/api/menus/${customMenuId}`, {
+    method: 'PATCH',
+    headers: jsonAuth,
+    body: JSON.stringify({ label: '报表中心', visible: false, sort: 5 }),
+  });
+  check('a custom menu can be edited', r.status === 200 && r.body?.label === '报表中心', `status ${r.status}`);
+  check('a custom menu can be hidden', r.body?.visible === false);
+}
+{
+  // A hidden menu must not reach the nav list, but must stay in the
+  // management view.
+  const visible = await api('/api/menus', { headers: auth });
+  check('hidden menu is absent from the nav list', !(visible.body?.items ?? []).some((m) => m.id === customMenuId));
+  const all = await api('/api/menus?all=true', { headers: auth });
+  check('hidden menu is present in the management view', (all.body?.items ?? []).some((m) => m.id === customMenuId));
+}
+{
+  // The path of a built-in tab points at a route the SPA owns; the API pins it
+  // even when the request attempts to retarget it. Its permission is pinned
+  // too — the page behind it enforces exactly that capability.
+  const list = await api('/api/menus?all=true', { headers: auth });
+  const users = (list.body?.items ?? []).find((m) => m.name === 'users');
+  const r = await api(`/api/menus/${users?.id}`, {
+    method: 'PATCH',
+    headers: jsonAuth,
+    body: JSON.stringify({ path: '/hijacked', permission: null, label: '成员' }),
+  });
+  check('built-in menu path is pinned', r.body?.path === '/users', `path ${r.body?.path}`);
+  check('built-in menu permission is pinned', r.body?.permission === 'users.read', `permission ${r.body?.permission}`);
+  check('built-in menu label is still editable', r.body?.label === '成员', `label ${r.body?.label}`);
+  // Restore the label so the browser probe's nav assertions keep matching.
+  await api(`/api/menus/${users?.id}`, {
+    method: 'PATCH',
+    headers: jsonAuth,
+    body: JSON.stringify({ label: '用户' }),
+  });
+}
+{
+  const list = await api('/api/menus?all=true', { headers: auth });
+  const tickets = (list.body?.items ?? []).find((m) => m.name === 'tickets');
+  const del = await api(`/api/menus/${tickets?.id}`, { method: 'DELETE', headers: auth });
+  check('built-in menu cannot be deleted (409)', del.status === 409, `status ${del.status}`);
+}
+{
+  // A non-admin must not reach the management view. Use the built-in agent
+  // role, which has no menus.manage.
+  const created = await api('/api/users', {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({
+      username: 'menu-agent',
+      email: 'menu-agent@example.com',
+      name: '菜单权限',
+      role: 'agent',
+      password: 'menuagent',
+    }),
+  });
+  const id = created.body?.id;
+  const agentToken = await login('menu-agent', 'menuagent');
+  check('menu test agent can log in', Boolean(agentToken));
+
+  if (agentToken) {
+    const all = await api('/api/menus?all=true', { headers: { Authorization: `Bearer ${agentToken}` } });
+    check('agent cannot list every menu (403)', all.status === 403, `status ${all.status}`);
+
+    const nav = await api('/api/menus', { headers: { Authorization: `Bearer ${agentToken}` } });
+    const names = (nav.body?.items ?? []).map((m) => m.name);
+    // The agent has users.read, so 用户 shows; it lacks roles.manage and
+    // menus.manage, so those tabs are filtered out by the server.
+    check('agent sees the users tab (has users.read)', names.includes('users'), names.join(','));
+    check('agent does not see the roles tab', !names.includes('roles'), names.join(','));
+    check('agent does not see the menus tab', !names.includes('menus'), names.join(','));
+
+    const denied = await api('/api/menus', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${agentToken}`, 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ name: 'nope', label: 'x', path: '/x', permission: null }),
+    });
+    check('agent cannot create a menu (403)', denied.status === 403, `status ${denied.status}`);
+  }
+
+  if (id) await api(`/api/users/${id}`, { method: 'DELETE', headers: auth });
+}
+{
+  const r = await api(`/api/menus/${customMenuId}`, { method: 'DELETE', headers: auth });
+  check('a custom menu can be deleted', r.status === 204, `status ${r.status}`);
+}
+
 
 // ---- delete --------------------------------------------------------------
 {

@@ -1,7 +1,7 @@
-import { and, desc, eq, inArray, like, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, like, or, sql } from 'drizzle-orm';
 import type { Db } from '../db/index.ts';
-import { comments, roles, tags, ticketTags, tickets, tokens, users } from '../db/schema.ts';
-import type { Comment, Permission, Role, Ticket, User } from '../db/schema.ts';
+import { comments, menus, roles, tags, ticketTags, tickets, tokens, users } from '../db/schema.ts';
+import type { Comment, Menu, Permission, Role, Ticket, User } from '../db/schema.ts';
 import { hashPassword } from '../auth.ts';
 import { nowIso } from '../time.ts';
 
@@ -129,25 +129,29 @@ export interface CreateTicketInput {
 
 export async function createTicket(db: Db, input: CreateTicketInput): Promise<TicketWithMeta> {
   const now = nowIso();
-  const created = (
-    await db
-      .insert(tickets)
-      .values({
-        subject: input.subject,
-        body: input.body ?? '',
-        priority: input.priority ?? 'normal',
-        status: 'open',
-        requesterEmail: input.requesterEmail,
-        requesterName: input.requesterName ?? null,
-        assigneeId: input.assigneeId ?? null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning()
-  )[0]!;
+  const id = await db.transaction(async (tx) => {
+    const created = (
+      await tx
+        .insert(tickets)
+        .values({
+          subject: input.subject,
+          body: input.body ?? '',
+          priority: input.priority ?? 'normal',
+          status: 'open',
+          requesterEmail: input.requesterEmail,
+          requesterName: input.requesterName ?? null,
+          assigneeId: input.assigneeId ?? null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning()
+    )[0]!;
 
-  if (input.tags?.length) await setTags(db, created.id, input.tags);
-  return (await getTicket(db, created.id))!;
+    if (input.tags?.length) await setTags(tx, created.id, input.tags);
+    return created.id;
+  });
+
+  return (await getTicket(db, id))!;
 }
 
 export type TicketPatch = Partial<{
@@ -182,8 +186,10 @@ export async function updateTicket(
     values.closedAt = patch.status === 'closed' ? (existing.closedAt ?? now) : null;
   }
 
-  await db.update(tickets).set(values).where(eq(tickets.id, id));
-  if (patch.tags !== undefined) await setTags(db, id, patch.tags);
+  await db.transaction(async (tx) => {
+    await tx.update(tickets).set(values).where(eq(tickets.id, id));
+    if (patch.tags !== undefined) await setTags(tx, id, patch.tags);
+  });
 
   return getTicket(db, id);
 }
@@ -195,15 +201,38 @@ export async function deleteTicket(db: Db, id: number): Promise<boolean> {
   return true;
 }
 
-export async function setTags(db: Db, ticketId: number, names: string[]): Promise<void> {
-  const clean = [...new Set(names.map((n) => n.trim()).filter(Boolean))];
-  await db.delete(ticketTags).where(eq(ticketTags.ticketId, ticketId));
+/**
+ * A connection that can run statements: the pooled database, or the transaction
+ * handle passed to a `db.transaction` callback. `setTags` must accept both so
+ * it can take part in a caller's transaction instead of running beside it.
+ */
+type Executor = Parameters<Parameters<Db['transaction']>[0]>[0];
 
-  for (const name of clean) {
-    const found = (await db.select().from(tags).where(eq(tags.name, name)).limit(1))[0];
-    const tag = found ?? (await db.insert(tags).values({ name }).returning())[0]!;
-    await db.insert(ticketTags).values({ ticketId, tagId: tag.id }).onConflictDoNothing();
-  }
+export async function setTags(db: Executor, ticketId: number, names: string[]): Promise<void> {
+  const clean = [...new Set(names.map((n) => n.trim()).filter(Boolean))];
+
+  // Replace the set in a fixed number of statements rather than one query per
+  // tag: resolve existing ids and missing names up front, insert only what is
+  // new, then relink. `delete` and the inserts run inside the caller's
+  // transaction, so a failure cannot leave the ticket with no tags.
+  await db.delete(ticketTags).where(eq(ticketTags.ticketId, ticketId));
+  if (clean.length === 0) return;
+
+  const existing = await db.select().from(tags).where(inArray(tags.name, clean));
+  const have = new Set(existing.map((t) => t.name));
+  const missing = clean.filter((n) => !have.has(n)).map((name) => ({ name }));
+
+  const inserted = missing.length
+    ? await db.insert(tags).values(missing).onConflictDoNothing().returning()
+    : [];
+
+  const byName = new Map([...existing, ...inserted].map((t) => [t.name, t.id]));
+  const links = clean
+    .map((name) => byName.get(name))
+    .filter((tagId): tagId is number => tagId != null)
+    .map((tagId) => ({ ticketId, tagId }));
+
+  if (links.length > 0) await db.insert(ticketTags).values(links).onConflictDoNothing();
 }
 
 export async function listComments(
@@ -512,6 +541,89 @@ export async function deleteRole(db: Db, id: number): Promise<boolean> {
 
 export async function listTags(db: Db) {
   return db.select().from(tags).orderBy(tags.name);
+}
+
+// ---- menus ----------------------------------------------------------------
+
+export async function listMenus(db: Db): Promise<Menu[]> {
+  return db.select().from(menus).orderBy(asc(menus.sort), asc(menus.id));
+}
+
+export async function getMenu(db: Db, id: number): Promise<Menu | null> {
+  const rows = await db.select().from(menus).where(eq(menus.id, id)).limit(1);
+  return rows[0] ?? null;
+}
+
+export async function getMenuByName(db: Db, name: string): Promise<Menu | null> {
+  const rows = await db.select().from(menus).where(eq(menus.name, name)).limit(1);
+  return rows[0] ?? null;
+}
+
+export interface CreateMenuInput {
+  name: string;
+  label: string;
+  path: string;
+  permission?: Permission | null;
+  sort?: number;
+  visible?: boolean;
+}
+
+export async function createMenu(db: Db, input: CreateMenuInput): Promise<Menu> {
+  return (
+    await db
+      .insert(menus)
+      .values({
+        name: input.name,
+        label: input.label,
+        path: input.path,
+        permission: input.permission ?? null,
+        sort: input.sort ?? 0,
+        visible: input.visible ?? true,
+      })
+      .returning()
+  )[0]!;
+}
+
+/**
+ * A custom menu may change everything, including `name`: unlike a role key,
+ * nothing references a menu row, so renaming is not a cascade.
+ */
+export interface UpdateMenuInput {
+  name?: string;
+  label?: string;
+  path?: string;
+  permission?: Permission | null;
+  sort?: number;
+  visible?: boolean;
+}
+
+export async function updateMenu(
+  db: Db,
+  id: number,
+  patch: UpdateMenuInput,
+): Promise<Menu | null> {
+  const existing = await getMenu(db, id);
+  if (!existing) return null;
+
+  const values: Record<string, unknown> = {};
+  if (patch.name !== undefined) values.name = patch.name;
+  if (patch.label !== undefined) values.label = patch.label;
+  if (patch.path !== undefined) values.path = patch.path;
+  if (patch.permission !== undefined) values.permission = patch.permission;
+  if (patch.sort !== undefined) values.sort = patch.sort;
+  if (patch.visible !== undefined) values.visible = patch.visible;
+
+  if (Object.keys(values).length > 0) {
+    await db.update(menus).set(values).where(eq(menus.id, id));
+  }
+  return getMenu(db, id);
+}
+
+export async function deleteMenu(db: Db, id: number): Promise<boolean> {
+  const existing = await getMenu(db, id);
+  if (!existing) return false;
+  await db.delete(menus).where(eq(menus.id, id));
+  return true;
 }
 
 export async function stats(db: Db) {

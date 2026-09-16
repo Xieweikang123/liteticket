@@ -73,6 +73,14 @@ of it having compiled. If a claim came from reasoning rather than execution, say
   `Permission` union, and add its Chinese label to `PERMISSION_LABEL` / `ORDER` in
   `web/src/pages/Roles.tsx` (the latter is a `Record<Permission, string>`, so the omission is a
   compile error, not a silent gap).
+- **The nav is data; routes are code.** Top-bar tabs are rows in the `menus` table, seeded from
+  `SYSTEM_MENUS` in `src/auth.ts` and reconciled by `ensureSystemMenus()` on boot (same contract as
+  roles: adding a tab to code reaches an existing install). `GET /api/menus` filters server-side by
+  `visible` + `permission`, so the client renders the list as given and no permission check lives in
+  `App.tsx`. A built-in tab's `path`/`permission` are pinned to the route and capability the SPA
+  actually enforces; only `label`/`sort`/`visible` are editable, and a built-in tab cannot be
+  deleted (hide it instead). A tab points at an existing SPA route — adding a genuinely new page is
+  still a code change, not a menu row.
 - **Built-in roles are reconciled from code on boot.** `SYSTEM_ROLES` in `src/auth.ts` is applied by
   `ensureSystemRoles()` (called in `src/server.ts`) on every start, so a permission added there
   reaches `admin` without a migration. The API refuses to edit or delete system roles.
@@ -97,18 +105,18 @@ of it having compiled. If a claim came from reasoning rather than execution, say
 ```
 src/
   app.ts              route composition and static serving
-  server.ts           bootstrap: seed roles/admin/token, listen
-  auth.ts             password hashing, token mint/verify, SYSTEM_ROLES
+  server.ts           bootstrap: seed roles/menus/admin/token, listen
+  auth.ts             password hashing, token mint/verify, SYSTEM_ROLES, SYSTEM_MENUS
   time.ts             the one timestamp format (ISO-8601 UTC) for SQL + JS
   db/schema.ts        tables + the PERMISSIONS catalog
   db/index.ts         migrations + BOOTSTRAP_SQL fallback (hand-maintained)
-  routes/api.ts       the only HTTP surface (JSON); can() / role routes
+  routes/api.ts       the only HTTP surface (JSON); can() / role & menu routes
   services/tickets.ts business rules — the single source of truth
 web/
   src/api.ts          typed client, the one place the token is attached
-  src/auth.tsx        session state + permissions from /api/auth/me
+  src/auth.tsx        session state + permissions from /api/auth/me, and the nav
   src/styles.css      all styling; scoped class prefixes per surface
-  src/pages/          tickets, ticket detail, users, roles, tokens, account, login
+  src/pages/          tickets, ticket detail, users, roles, menus, tokens, account, login
 ```
 
 ## Verification

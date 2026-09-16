@@ -103,6 +103,37 @@ const updateRoleSchema = z.object({
   permissions: z.array(z.enum(PERMISSIONS)).optional(),
 });
 
+/**
+ * A nav tab. `name` is a stable machine key; `path` must be an in-app route,
+ * so it starts with `/` and never with `//` (which a browser reads as a
+ * protocol-relative URL). `permission` null means every signed-in user sees it.
+ */
+const menuPath = z
+  .string()
+  .min(1, 'path is required')
+  .max(200)
+  .regex(/^\/[^/]/, 'path must be an absolute in-app route, e.g. /reports');
+
+const menuPermission = z.enum(PERMISSIONS).nullish();
+
+const createMenuSchema = z.object({
+  name: roleName,
+  label: z.string().min(1, 'label is required').max(100),
+  path: menuPath,
+  permission: menuPermission,
+  sort: z.number().int().min(0).max(100000).optional(),
+  visible: z.boolean().optional(),
+});
+
+const updateMenuSchema = z.object({
+  name: roleName.optional(),
+  label: z.string().min(1).max(100).optional(),
+  path: menuPath.optional(),
+  permission: menuPermission,
+  sort: z.number().int().min(0).max(100000).optional(),
+  visible: z.boolean().optional(),
+});
+
 const listQuerySchema = z.object({
   status: z.enum(TICKET_STATUSES).optional(),
   assigneeId: z.coerce.number().int().positive().optional(),
@@ -285,8 +316,13 @@ export function apiRoutes(db: Db) {
     const row = await svc.getUserByIdForAuth(db, p.userId);
     if (!row) return c.json({ error: 'user not found' }, 404);
 
+    // 403, not 401: the client treats every 401 on an authenticated request as
+    // a dead token — it clears the stored token and bounces the user to login.
+    // A mistyped current password is a bad argument, not an expired session, so
+    // returning 401 here logged people out and replaced this message with
+    // 登录已失效. 401 stays reserved for "your token is no longer valid".
     if (!verifyPassword(parsed.data.currentPassword, row.passwordHash)) {
-      return c.json({ error: '当前密码不正确' }, 401);
+      return c.json({ error: '当前密码不正确' }, 403);
     }
 
     await svc.updateUser(db, p.userId, { password: parsed.data.newPassword });
@@ -338,6 +374,13 @@ export function apiRoutes(db: Db) {
     const parsed = createTicketSchema.safeParse(raw);
     if (!parsed.success) return c.json({ error: 'validation failed', issues: issues(parsed.error) }, 422);
 
+    // `assigneeId` is a foreign key, so a value pointing at a missing user
+    // would surface as a raw SQLite constraint error (500) rather than a
+    // structured rejection. Check it here so the failure is a 422.
+    if (parsed.data.assigneeId != null && !(await svc.getUser(db, parsed.data.assigneeId))) {
+      return c.json({ error: 'assignee not found' }, 422);
+    }
+
     const ticket = await svc.createTicket(db, parsed.data);
     return c.json(ticket, 201);
   });
@@ -351,6 +394,10 @@ export function apiRoutes(db: Db) {
 
     const parsed = updateTicketSchema.safeParse(raw);
     if (!parsed.success) return c.json({ error: 'validation failed', issues: issues(parsed.error) }, 422);
+
+    if (parsed.data.assigneeId != null && !(await svc.getUser(db, parsed.data.assigneeId))) {
+      return c.json({ error: 'assignee not found' }, 422);
+    }
 
     const ticket = await svc.updateTicket(db, id, parsed.data);
     if (!ticket) return c.json({ error: 'ticket not found' }, 404);
@@ -390,6 +437,12 @@ export function apiRoutes(db: Db) {
     const input = principal.userId != null
       ? { ...parsed.data, authorId: principal.userId, authorEmail: null }
       : parsed.data;
+
+    // Same foreign-key guard as `assigneeId`: an author that does not exist is
+    // a rejected input, not a database crash.
+    if (input.authorId != null && !(await svc.getUser(db, input.authorId))) {
+      return c.json({ error: 'author not found' }, 422);
+    }
 
     const comment = await svc.addComment(db, id, input);
     if (!comment) return c.json({ error: 'ticket not found' }, 404);
@@ -566,6 +619,103 @@ export function apiRoutes(db: Db) {
 
   api.get('/tags', can('tickets.read'), async (c) => c.json({ items: await svc.listTags(db) }));
   api.get('/stats', can('tickets.read'), async (c) => c.json(await svc.stats(db)));
+
+  // ---- Menus -------------------------------------------------------------
+  //
+  // The nav is data, so every signed-in user needs to read it. `GET /menus`
+  // returns only the tabs the caller may actually see: hidden rows are
+  // dropped, and a row gated on a permission the caller lacks is dropped too.
+  // That filtering lives here rather than in the client because the client
+  // cannot be trusted with a menu it must not render — and because a menu
+  // pointing at a forbidden page would be a dead end anyway.
+  //
+  // `?all=true` is the management view: it returns hidden and ungated rows and
+  // is gated on `menus.manage` instead.
+  api.get('/menus', async (c) => {
+    const principal = c.get('auth');
+    const menus = await svc.listMenus(db);
+    const all = c.req.query('all') === 'true';
+
+    if (all) {
+      if (!principal.permissions.includes('menus.manage')) {
+        return c.json({ error: 'permission required: menus.manage' }, 403);
+      }
+      return c.json({ items: menus });
+    }
+
+    const visible = menus.filter(
+      (m) =>
+        m.visible &&
+        (m.permission == null || principal.permissions.includes(m.permission)),
+    );
+    return c.json({ items: visible });
+  });
+
+  api.post('/menus', can('menus.manage'), async (c) => {
+    const raw = await c.req.json().catch(() => null);
+    if (raw == null) return c.json({ error: 'invalid JSON body' }, 400);
+
+    const parsed = createMenuSchema.safeParse(raw);
+    if (!parsed.success) return c.json({ error: 'validation failed', issues: issues(parsed.error) }, 422);
+
+    if (await svc.getMenuByName(db, parsed.data.name)) {
+      return c.json({ error: 'menu name already in use' }, 409);
+    }
+
+    const menu = await svc.createMenu(db, parsed.data);
+    return c.json(menu, 201);
+  });
+
+  api.patch('/menus/:id', can('menus.manage'), async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+
+    const menu = await svc.getMenu(db, id);
+    if (!menu) return c.json({ error: 'menu not found' }, 404);
+
+    const raw = await c.req.json().catch(() => null);
+    if (raw == null) return c.json({ error: 'invalid JSON body' }, 400);
+
+    const parsed = updateMenuSchema.safeParse(raw);
+    if (!parsed.success) return c.json({ error: 'validation failed', issues: issues(parsed.error) }, 422);
+
+    if (parsed.data.name !== undefined) {
+      const clash = await svc.getMenuByName(db, parsed.data.name);
+      if (clash && clash.id !== id) return c.json({ error: 'menu name already in use' }, 409);
+    }
+
+    // A built-in tab targets a route the SPA owns and a permission its page
+    // actually enforces; letting either drift would produce a tab that 404s or
+    // that shows a page which then 403s. `ensureSystemMenus` reconciles both on
+    // boot, so an accepted edit here would be silently undone — refuse by
+    // dropping them from the patch rather than reporting a change that will not
+    // persist. `label`, `sort`, and `visible` are the admin's.
+    const patch = { ...parsed.data };
+    if (menu.isSystem) {
+      delete patch.name;
+      delete patch.path;
+      delete patch.permission;
+    }
+
+    const updated = await svc.updateMenu(db, id, patch);
+    if (!updated) return c.json({ error: 'menu not found' }, 404);
+    return c.json(updated);
+  });
+
+  api.delete('/menus/:id', can('menus.manage'), async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+
+    const menu = await svc.getMenu(db, id);
+    if (!menu) return c.json({ error: 'menu not found' }, 404);
+    // A built-in tab's SPA route remains routable, so removing the tab would
+    // hide a page with no way back. Hiding it (`visible: false`) is the
+    // supported alternative.
+    if (menu.isSystem) return c.json({ error: 'system menu cannot be deleted' }, 409);
+
+    await svc.deleteMenu(db, id);
+    return c.body(null, 204);
+  });
 
   // ---- Tokens (self-service) ---------------------------------------------
 

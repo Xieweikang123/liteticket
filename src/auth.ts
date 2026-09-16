@@ -1,7 +1,7 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { eq, and, lt } from 'drizzle-orm';
 import type { Db } from './db/index.ts';
-import { PERMISSIONS, roles, tokens, users } from './db/schema.ts';
+import { PERMISSIONS, menus, roles, tokens, users } from './db/schema.ts';
 import type { Permission } from './db/schema.ts';
 import { nowIso } from './time.ts';
 
@@ -42,6 +42,36 @@ export const SYSTEM_ROLES: RoleSeed[] = [
     description: '处理工单，不能管理用户、角色或删除工单。',
     permissions: ['tickets.read', 'tickets.write', 'users.read'],
   },
+];
+
+/**
+ * The built-in navigation tabs. Seeded on every boot and reconciled against
+ * this list, so adding a permission-gated tab here reaches an existing install
+ * without a migration — the same contract as SYSTEM_ROLES.
+ *
+ * `permission: null` means the tab is visible to any signed-in user. The
+ * permission name is stored on the menu row and resolved live by the client.
+ *
+ * The nav is work surfaces only: 账号 is not here because it is reached from the
+ * user menu in the top bar. Its `/account` route still exists and still has a
+ * page — a menu row points at a route, it does not own it. Dropping a seed,
+ * though, does not remove an already-seeded row (see `ensureSystemMenus`), so an
+ * install that predates this change keeps the tab until the row is deleted.
+ */
+export interface MenuSeed {
+  name: string;
+  label: string;
+  path: string;
+  permission: Permission | null;
+  sort: number;
+}
+
+export const SYSTEM_MENUS: MenuSeed[] = [
+  { name: 'tickets', label: '工单', path: '/', permission: null, sort: 10 },
+  { name: 'users', label: '用户', path: '/users', permission: 'users.read', sort: 20 },
+  { name: 'roles', label: '角色', path: '/roles', permission: 'roles.manage', sort: 30 },
+  { name: 'menus', label: '菜单', path: '/menus', permission: 'menus.manage', sort: 40 },
+  { name: 'tokens', label: '我的令牌', path: '/tokens', permission: null, sort: 50 },
 ];
 
 export function hashToken(token: string): string {
@@ -327,6 +357,47 @@ export async function ensureSystemRoles(db: Db): Promise<void> {
           isSystem: true,
         })
         .where(eq(roles.id, existing.id));
+    }
+  }
+}
+
+/**
+ * Seed the built-in navigation tabs and keep their route/permission binding
+ * authoritative.
+ *
+ * Unlike roles, the presentation fields (`label`, `sort`, `visible`) belong to
+ * the admin: the menu management page can rename, reorder, and hide a built-in
+ * tab, and boot must not undo that. What boot does enforce is `path` and
+ * `permission` — those point at a real SPA route and a real permission, so
+ * letting an edit drift them would produce a tab that 404s or that everyone
+ * sees regardless of rights. New seeds are inserted with their default
+ * presentation; existing rows get only the code-owned columns reconciled.
+ */
+export async function ensureSystemMenus(db: Db): Promise<void> {
+  for (const seed of SYSTEM_MENUS) {
+    const existing = (await db.select().from(menus).where(eq(menus.name, seed.name)).limit(1))[0];
+    if (!existing) {
+      await db.insert(menus).values({
+        name: seed.name,
+        label: seed.label,
+        path: seed.path,
+        permission: seed.permission,
+        sort: seed.sort,
+        visible: true,
+        isSystem: true,
+      });
+      continue;
+    }
+
+    const changed =
+      existing.path !== seed.path ||
+      existing.permission !== seed.permission ||
+      !existing.isSystem;
+    if (changed) {
+      await db
+        .update(menus)
+        .set({ path: seed.path, permission: seed.permission, isSystem: true })
+        .where(eq(menus.id, existing.id));
     }
   }
 }

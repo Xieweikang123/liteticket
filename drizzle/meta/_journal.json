@@ -36,6 +36,13 @@
       "when": 1789304760569,
       "tag": "0004_uneven_khan",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1789344746571,
+      "tag": "0005_regular_spirit",
+      "breakpoints": true
     }
   ]
 }

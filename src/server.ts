@@ -2,7 +2,7 @@ import { serve } from '@hono/node-server';
 import { eq } from 'drizzle-orm';
 import { loadConfig } from './config.ts';
 import { createApp } from './app.ts';
-import { ensureBootstrapToken, ensureSystemRoles, ensureUser, hashPassword, purgeExpiredTokens } from './auth.ts';
+import { ensureBootstrapToken, ensureSystemMenus, ensureSystemRoles, ensureUser, hashPassword, purgeExpiredTokens } from './auth.ts';
 import { getDb } from './db/index.ts';
 import { users } from './db/schema.ts';
 
@@ -13,6 +13,10 @@ const { db } = getDb();
 // Roles before users: a user's permissions resolve against this table, and the
 // seed admin below is assigned the `admin` role by name.
 await ensureSystemRoles(db);
+
+// The built-in tabs are reconciled from code, so a new menu-gated page reaches
+// an existing install without a migration.
+await ensureSystemMenus(db);
 
 // A restart is a natural cleanup point for sessions that expired while the
 // server was down; login sweeps again, so the table stays bounded either way.
