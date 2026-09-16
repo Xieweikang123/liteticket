@@ -89,8 +89,10 @@ try {
   check('admin sees the Users nav link', (await page.locator('nav a', { hasText: '用户' }).count()) > 0);
 
   // ---- create a ticket -----------------------------------------------------
+  // Creating opens a drawer whose form carries a stable id; the title lives in
+  // the drawer header, so match on the id rather than on form text.
   await page.click('button:has-text("新建工单")');
-  const newForm = page.locator('form:has-text("新建工单")');
+  const newForm = page.locator('form#new-ticket-form');
   await newForm.waitFor({ timeout: 8000 });
 
   const subject = `浏览器测试工单 ${Date.now()}`;
@@ -99,7 +101,9 @@ try {
   await newForm.locator('.field:has-text("标题") input').fill(subject);
   await newForm.locator('textarea').fill('由自动化浏览器测试创建');
   await newForm.locator('input[type="email"]').fill('browser@example.com');
-  await newForm.locator('button[type="submit"]').click();
+  // The submit button lives in the drawer footer, outside the form element, and
+  // is associated by its `form` attribute.
+  await page.locator('button[form="new-ticket-form"]').click();
 
   await page.waitForSelector(`a:has-text("${subject}")`, { timeout: 10000 });
   check('new ticket appears in the list', (await page.locator(`a:has-text("${subject}")`).count()) > 0);
@@ -203,6 +207,64 @@ try {
     (await page.locator('text=不可编辑').count()) >= 2,
   );
 
+  // ---- menus page ----------------------------------------------------------
+  //
+  // The nav is data now. This proves the management page renders, that the
+  // built-in tabs are seeded as rows, and that the top bar is in fact driven by
+  // that data: renaming a tab here must change the nav without a reload.
+  await page.click('nav a:has-text("菜单")');
+  await page.waitForSelector('button:has-text("新建菜单")', { timeout: 8000 });
+  check('menus page rendered', (await page.locator('button:has-text("新建菜单")').count()) > 0);
+  await page.waitForSelector('td:has-text("tickets")', { timeout: 8000 });
+  check('built-in tickets menu is listed', (await page.locator('td:has-text("tickets")').count()) > 0);
+  check('built-in menus are marked as system', (await page.locator('text=内置').count()) >= 2);
+
+  // Rename 我的令牌 through the drawer and assert the nav follows. The target
+  // is a tab that exists in the nav: what this proves is that the top bar is
+  // driven by the menu rows, and the route behind the renamed row still works.
+  const tokensRow = page.locator('tr:has(td:has-text("tokens"))').first();
+  await tokensRow.locator('button:has-text("编辑")').click();
+  const nameInput = page.locator('#edit-menu-form .field:has-text("名称") input');
+  await nameInput.waitFor({ timeout: 8000 });
+  await nameInput.fill('我的密钥');
+  await page.locator('button[form="edit-menu-form"]').click();
+  await page.waitForSelector('nav a:has-text("我的密钥")', { timeout: 8000 });
+  check(
+    'editing a menu updates the top nav without a reload',
+    (await page.locator('nav a', { hasText: '我的密钥' }).count()) > 0,
+  );
+
+  // Renaming does not change the route: the tab must still work.
+  await page.click('nav a:has-text("我的密钥")');
+  await page.waitForSelector('form:has-text("签发新令牌")', { timeout: 8000 });
+  check(
+    'the renamed tab still navigates to its page',
+    (await page.locator('form:has-text("签发新令牌")').count()) > 0,
+  );
+
+  // And the login session must not have been disturbed by the edit.
+  check(
+    'editing a menu keeps the session valid',
+    (await page.evaluate(() => localStorage.getItem('liteticket.token'))) !== null,
+  );
+
+  // Restore the label through the API, so a repeat run starts from the seeded
+  // state rather than accumulating renames.
+  {
+    const token = await page.evaluate(() => localStorage.getItem('liteticket.token'));
+    const all = await fetch(`${BASE}/api/menus?all=true`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }).then((r) => r.json());
+    const tokens = all.items?.find((m) => m.name === 'tokens');
+    if (tokens) {
+      await fetch(`${BASE}/api/menus/${tokens.id}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: '我的令牌' }),
+      });
+    }
+  }
+
   // ---- an agent (non-admin) must boot cleanly ------------------------------
   //
   // This is the regression guard for a real bug: the client used to resolve
@@ -257,23 +319,35 @@ try {
     'agent should not be offered role management',
   );
   check(
+    'agent does NOT see the Menus nav link',
+    (await agentPage.locator('nav a', { hasText: '菜单' }).count()) === 0,
+    'agent should not be offered menu management',
+  );
+  check(
     'agent sees the token self-service link',
     (await agentPage.locator('nav a', { hasText: '我的令牌' }).count()) > 0,
   );
+  // 账号 is not a tab, so an agent reaches it the same way an admin does.
   check(
-    'agent sees the account (password) link',
-    (await agentPage.locator('nav a', { hasText: '账号' }).count()) > 0,
+    'agent does NOT see an account tab',
+    (await agentPage.locator('nav a', { hasText: '账号' }).count()) === 0,
+  );
+  check(
+    'agent has the user menu',
+    (await agentPage.locator('.who-toggle').count()) === 1,
   );
 
-  // A non-admin has no users.manage, so the account page is the only place
-  // they can change their password. Exercise it for real.
-  await agentPage.click('nav a:has-text("账号")');
-  await agentPage.waitForSelector('form:has-text("修改密码")', { timeout: 8000 });
-  check('account page rendered', (await agentPage.locator('form:has-text("修改密码")').count()) > 0);
+  // A non-admin has no users.manage, so the user menu is the only place they
+  // can change their password. Exercise it for real: open the menu, open the
+  // drawer, submit the form.
+  await agentPage.click('.who-toggle');
+  await agentPage.click('.who-menu button:has-text("修改密码")');
+  await agentPage.waitForSelector('form#change-password-form', { timeout: 8000 });
+  check('the user menu opens the password drawer', (await agentPage.locator('form#change-password-form').count()) > 0);
   await agentPage.locator('.field:has-text("当前密码") input').fill(agentPassword);
   await agentPage.fill('#account-new-password', 'agentpass456');
   await agentPage.fill('#account-confirm-password', 'agentpass456');
-  await agentPage.locator('form:has-text("修改密码") button[type="submit"]').click();
+  await agentPage.locator('button[form="change-password-form"]').click();
   await agentPage.waitForFunction(() => location.pathname.startsWith('/login'), { timeout: 8000 });
   check('password change logs the agent out', agentPage.url().includes('/login'), `url=${agentPage.url()}`);
 
@@ -305,7 +379,9 @@ try {
   await agentContext.close();
 
   // ---- logout (last: it clears the token the checks above depend on) --------
-  await page.click('button:has-text("退出")');
+  // 退出 lives in the user menu now, so the menu has to be opened first.
+  await page.click('.who-toggle');
+  await page.click('.who-menu button:has-text("退出")');
   await page.waitForFunction(() => location.pathname.startsWith('/login'), { timeout: 8000 });
   check('logout returns to /login', page.url().includes('/login'), `url=${page.url()}`);
   check(
