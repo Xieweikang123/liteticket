@@ -230,12 +230,106 @@ let ticketId;
 }
 {
   const r = await api(`/api/tickets/${ticketId}/comments?includeInternal=true`, { headers: auth });
-  check('internal note visible on request', r.body?.items?.length === 2, `got ${r.body?.items?.length}`);
+  check(
+    'write-capable token can see internal notes on request',
+    r.body?.items?.length === 2,
+    `got ${r.body?.items?.length}`,
+  );
 }
 {
   const r = await api(`/api/tickets/${ticketId}`, { headers: auth });
   check('detail hides internal notes by default', r.body?.comments?.length === 1);
   check('comment count reflected', r.body?.commentCount === 2, `got ${r.body?.commentCount}`);
+}
+
+// ---- @-mentions ----------------------------------------------------------
+{
+  const r = await api(`/api/tickets/${ticketId}/comments`, {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({
+      body: `请 @${adminUsername} 看一下，抄送 @nobody_xyz`,
+      authorEmail: 'agent@example.com',
+    }),
+  });
+  const mentions = r.body?.mentions ?? [];
+  check('mention comment created', r.status === 201, `status ${r.status}`);
+  check(
+    'known @username resolves to a mention',
+    mentions.some((m) => m.username === adminUsername),
+    JSON.stringify(mentions),
+  );
+  check(
+    'unknown @username is ignored',
+    !mentions.some((m) => m.username === 'nobody_xyz'),
+    JSON.stringify(mentions),
+  );
+}
+{
+  const r = await api(`/api/tickets/${ticketId}/comments`, {
+    method: 'POST',
+    headers: jsonAuth,
+    body: JSON.stringify({
+      body: `邮箱 user@example.com 不是提及；@${adminUsername} 才是`,
+      authorEmail: 'agent@example.com',
+    }),
+  });
+  const mentions = r.body?.mentions ?? [];
+  check(
+    'email address is not treated as a mention',
+    r.status === 201 &&
+      mentions.length === 1 &&
+      mentions[0]?.username === adminUsername,
+    JSON.stringify(mentions),
+  );
+}
+{
+  const r = await api('/api/tickets?mentioned=me', { headers: auth });
+  check(
+    'mentioned=me requires a user-bound token',
+    r.status === 400,
+    `status ${r.status}`,
+  );
+}
+{
+  const sessionAuth = { Authorization: `Bearer ${sessionToken}` };
+  const r = await api('/api/tickets?mentioned=me', { headers: sessionAuth });
+  const hasIt = r.body?.items?.some((t) => t.id === ticketId);
+  check('mentioned=me lists the ticket for admin', r.status === 200 && hasIt, `status ${r.status}`);
+  const row = r.body?.items?.find((t) => t.id === ticketId);
+  check('list marks mentionedMe', row?.mentionedMe === true, JSON.stringify(row));
+  check('list marks mentionUnread', row?.mentionUnread === true, JSON.stringify(row));
+}
+{
+  const sessionAuth = { Authorization: `Bearer ${sessionToken}` };
+  const r = await api(`/api/tickets/${ticketId}?includeInternal=true`, { headers: sessionAuth });
+  const withMentions = (r.body?.comments ?? []).filter((c) => (c.mentions ?? []).length > 0);
+  check(
+    'detail embeds mentions on comments',
+    withMentions.length >= 1,
+    `got ${withMentions.length}`,
+  );
+}
+{
+  const sessionAuth = { Authorization: `Bearer ${sessionToken}` };
+  const r = await api(`/api/tickets/${ticketId}/mentions/read`, {
+    method: 'POST',
+    headers: sessionAuth,
+  });
+  check('mark mentions read works', r.status === 200 && r.body?.marked >= 1, JSON.stringify(r.body));
+}
+{
+  const sessionAuth = { Authorization: `Bearer ${sessionToken}` };
+  const r = await api('/api/tickets?mentioned=me&mentionUnread=1', { headers: sessionAuth });
+  const hasIt = r.body?.items?.some((t) => t.id === ticketId);
+  check('unread filter clears after mark-read', r.status === 200 && !hasIt, `still listed`);
+}
+{
+  const sessionAuth = { Authorization: `Bearer ${sessionToken}` };
+  const r = await api('/api/tickets?mentioned=me', { headers: sessionAuth });
+  const row = r.body?.items?.find((t) => t.id === ticketId);
+  check('read mention still listed under mentioned=me', Boolean(row), 'missing');
+  check('mentionUnread false after mark-read', row?.mentionUnread === false, JSON.stringify(row));
 }
 
 // ---- change timeline -----------------------------------------------------
@@ -308,6 +402,17 @@ let attachmentId;
 {
   const r = await api(`/api/tickets/${ticketId}/attachments/${attachmentId}`, { headers: auth });
   check('deleted attachment 404', r.status === 404);
+}
+{
+  // bodyLimit + per-file cap must reject before accepting an oversize upload.
+  const form = new FormData();
+  form.append('file', new Blob([new Uint8Array(10 * 1024 * 1024 + 1)]), 'too-big.bin');
+  const r = await api(`/api/tickets/${ticketId}/attachments`, {
+    method: 'POST',
+    headers: auth,
+    body: form,
+  });
+  check('oversized attachment rejected with 413', r.status === 413, `status ${r.status}`);
 }
 
 // ---- users, tags, stats --------------------------------------------------
@@ -808,6 +913,45 @@ let viewerRoleId;
       body: JSON.stringify({ priority: 'normal' }),
     });
     check('revoking a permission applies to an existing token immediately', after.status === 403, `status ${after.status}`);
+
+    // tickets.read alone must not unlock internal notes, even with the query flag.
+    const comments = await api(`/api/tickets/${ticketId}/comments?includeInternal=true`, {
+      headers: { Authorization: `Bearer ${viewerToken}` },
+    });
+    const commentInternals = (comments.body?.items ?? []).map((c) => c.isInternal);
+    check(
+      'tickets.read cannot see internal notes via comments?includeInternal',
+      comments.status === 200 &&
+        Array.isArray(comments.body?.items) &&
+        comments.body.items.length >= 1 &&
+        commentInternals.every((v) => v === false),
+      `got ${JSON.stringify(commentInternals)}`,
+    );
+    const detail = await api(`/api/tickets/${ticketId}?includeInternal=true`, {
+      headers: { Authorization: `Bearer ${viewerToken}` },
+    });
+    const detailInternals = (detail.body?.comments ?? []).map((c) => c.isInternal);
+    check(
+      'tickets.read cannot see internal notes via ticket?includeInternal',
+      detail.status === 200 &&
+        Array.isArray(detail.body?.comments) &&
+        detail.body.comments.length >= 1 &&
+        detailInternals.every((v) => v === false),
+      `got ${JSON.stringify(detailInternals)}`,
+    );
+
+    // Sanity: a write-capable token still receives the internal note with the flag.
+    const asWriter = await api(`/api/tickets/${ticketId}/comments?includeInternal=true`, {
+      headers: auth,
+    });
+    check(
+      'write-capable token still receives internal notes',
+      asWriter.status === 200 &&
+        Array.isArray(asWriter.body?.items) &&
+        asWriter.body.items.some((c) => c.isInternal === true) &&
+        asWriter.body.items.length > comments.body.items.length,
+      `writer=${asWriter.body?.items?.length} reader=${comments.body?.items?.length}`,
+    );
   }
 
   if (viewerId) await api(`/api/users/${viewerId}`, { method: 'DELETE', headers: auth });

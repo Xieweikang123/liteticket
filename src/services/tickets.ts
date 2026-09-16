@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { and, asc, desc, eq, inArray, like, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, like, or, sql } from 'drizzle-orm';
 import type { Db } from '../db/index.ts';
 import {
   attachments,
+  commentMentions,
   comments,
   menus,
   roles,
@@ -41,6 +42,42 @@ export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const MAX_ATTACHMENTS_PER_TICKET = 50;
 
 /**
+ * Read a Blob/File with a hard byte ceiling. Aborts the stream as soon as the
+ * cap is exceeded so an oversized part is not held as one contiguous buffer.
+ */
+export async function readBlobCapped(
+  blob: Blob,
+  maxBytes: number,
+): Promise<{ ok: true; data: Uint8Array } | { ok: false; error: 'too_large' }> {
+  // Declared size is authoritative when present; skip streaming an oversize part.
+  if (typeof blob.size === 'number' && blob.size > maxBytes) {
+    return { ok: false, error: 'too_large' };
+  }
+
+  const reader = blob.stream().getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return { ok: false, error: 'too_large' };
+    }
+    chunks.push(value);
+  }
+
+  const data = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    data.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { ok: true, data };
+}
+
+/**
  * Metadata safe to return over the API. `storedName` is an opaque on-disk key
  * and must never leave the server — downloads are addressed by attachment id.
  */
@@ -60,6 +97,21 @@ export interface TicketWithMeta extends Ticket {
   assigneeName: string | null;
   tags: string[];
   commentCount: number;
+  /** Set when the list/detail call knows the viewer; false for machine tokens. */
+  mentionedMe: boolean;
+  /** True when the viewer has at least one unread mention on this ticket. */
+  mentionUnread: boolean;
+}
+
+/** A resolved @username target, safe to embed on a comment. */
+export interface MentionRef {
+  userId: number;
+  username: string;
+  name: string;
+}
+
+export interface CommentWithMentions extends Comment {
+  mentions: MentionRef[];
 }
 
 export type TicketSort = 'updated' | 'priority' | 'id';
@@ -76,9 +128,22 @@ export interface ListOptions {
   order?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
+  /**
+   * Restrict to tickets where this user was @-mentioned in a comment.
+   * Driven by `?mentioned=me` on the list route.
+   */
+  mentionedUserId?: number;
+  /** With `mentionedUserId`, keep only tickets that still have an unread mention. */
+  mentionUnread?: boolean;
+  /** Viewer for `mentionedMe` / `mentionUnread` hydration; omit for machine tokens. */
+  viewerUserId?: number;
 }
 
-async function hydrate(db: Db, rows: Ticket[]): Promise<TicketWithMeta[]> {
+async function hydrate(
+  db: Db,
+  rows: Ticket[],
+  viewerUserId?: number,
+): Promise<TicketWithMeta[]> {
   if (rows.length === 0) return [];
   const ids = rows.map((r) => r.id);
 
@@ -113,11 +178,34 @@ async function hydrate(db: Db, rows: Ticket[]): Promise<TicketWithMeta[]> {
     for (const u of userRows) names.set(u.id, u.name);
   }
 
+  const mentioned = new Set<number>();
+  const unread = new Set<number>();
+  if (viewerUserId != null) {
+    const mentionRows = await db
+      .select({
+        ticketId: commentMentions.ticketId,
+        readAt: commentMentions.readAt,
+      })
+      .from(commentMentions)
+      .where(
+        and(
+          eq(commentMentions.userId, viewerUserId),
+          inArray(commentMentions.ticketId, ids),
+        ),
+      );
+    for (const r of mentionRows) {
+      mentioned.add(r.ticketId);
+      if (r.readAt == null) unread.add(r.ticketId);
+    }
+  }
+
   return rows.map((r) => ({
     ...r,
     assigneeName: r.assigneeId != null ? (names.get(r.assigneeId) ?? null) : null,
     tags: (tagsByTicket.get(r.id) ?? []).sort(),
     commentCount: counts.get(r.id) ?? 0,
+    mentionedMe: mentioned.has(r.id),
+    mentionUnread: unread.has(r.id),
   }));
 }
 
@@ -149,6 +237,15 @@ export async function listTickets(
       .where(eq(tags.name, opts.tag));
     filters.push(inArray(tickets.id, sub));
   }
+  if (opts.mentionedUserId != null) {
+    const mentionFilters = [eq(commentMentions.userId, opts.mentionedUserId)];
+    if (opts.mentionUnread) mentionFilters.push(isNull(commentMentions.readAt));
+    const sub = db
+      .select({ ticketId: commentMentions.ticketId })
+      .from(commentMentions)
+      .where(and(...mentionFilters));
+    filters.push(inArray(tickets.id, sub));
+  }
 
   const where = filters.length > 0 ? and(...filters) : undefined;
 
@@ -177,14 +274,21 @@ export async function listTickets(
     await db.select({ n: sql<number>`count(*)` }).from(tickets).where(where)
   )[0];
 
-  return { items: await hydrate(db, rows), total: Number(totalRow?.n ?? 0) };
+  return {
+    items: await hydrate(db, rows, opts.viewerUserId),
+    total: Number(totalRow?.n ?? 0),
+  };
 }
 
-export async function getTicket(db: Db, id: number): Promise<TicketWithMeta | null> {
+export async function getTicket(
+  db: Db,
+  id: number,
+  viewerUserId?: number,
+): Promise<TicketWithMeta | null> {
   const rows = await db.select().from(tickets).where(eq(tickets.id, id)).limit(1);
   const row = rows[0];
   if (!row) return null;
-  return (await hydrate(db, [row]))[0] ?? null;
+  return (await hydrate(db, [row], viewerUserId))[0] ?? null;
 }
 
 export interface CreateTicketInput {
@@ -391,16 +495,68 @@ export async function listComments(
   db: Db,
   ticketId: number,
   opts: { includeInternal?: boolean } = {},
-): Promise<Comment[]> {
+): Promise<CommentWithMentions[]> {
   const filters = [eq(comments.ticketId, ticketId)];
   // The load-bearing line for the internal-note guarantee.
   if (!opts.includeInternal) filters.push(eq(comments.isInternal, false));
 
-  return db
+  const rows = await db
     .select()
     .from(comments)
     .where(and(...filters))
     .orderBy(comments.createdAt, comments.id);
+
+  return attachMentions(db, rows);
+}
+
+/**
+ * Username charset matches the login identifier. A leading boundary keeps
+ * `user@example.com` from being treated as a mention of `example.com`.
+ */
+const MENTION_RE = /(?:^|[^a-zA-Z0-9._-])@([a-zA-Z0-9._-]+)/g;
+
+/** Unique `@username` tokens from a comment body, in first-seen order. */
+export function extractMentionUsernames(body: string): string[] {
+  const found: string[] = [];
+  const seen = new Set<string>();
+  MENTION_RE.lastIndex = 0;
+  for (const m of body.matchAll(MENTION_RE)) {
+    const name = m[1]!;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    found.push(name);
+  }
+  return found;
+}
+
+async function attachMentions(db: Db, rows: Comment[]): Promise<CommentWithMentions[]> {
+  if (rows.length === 0) return [];
+  const ids = rows.map((r) => r.id);
+  const links = await db
+    .select({
+      commentId: commentMentions.commentId,
+      userId: users.id,
+      username: users.username,
+      name: users.name,
+    })
+    .from(commentMentions)
+    .innerJoin(users, eq(users.id, commentMentions.userId))
+    .where(inArray(commentMentions.commentId, ids));
+
+  const byComment = new Map<number, MentionRef[]>();
+  for (const r of links) {
+    const list = byComment.get(r.commentId) ?? [];
+    list.push({ userId: r.userId, username: r.username, name: r.name });
+    byComment.set(r.commentId, list);
+  }
+
+  return rows.map((r) => ({
+    ...r,
+    mentions: (byComment.get(r.id) ?? []).sort((a, b) =>
+      a.username.localeCompare(b.username),
+    ),
+  }));
 }
 
 export interface CreateCommentInput {
@@ -414,31 +570,87 @@ export async function addComment(
   db: Db,
   ticketId: number,
   input: CreateCommentInput,
-): Promise<Comment | null> {
+): Promise<CommentWithMentions | null> {
   const ticket = (
     await db.select().from(tickets).where(eq(tickets.id, ticketId)).limit(1)
   )[0];
   if (!ticket) return null;
 
   const now = nowIso();
-  const created = (
-    await db
-      .insert(comments)
-      .values({
-        ticketId,
-        body: input.body,
-        isInternal: input.isInternal ?? false,
-        authorId: input.authorId ?? null,
-        authorEmail: input.authorEmail ?? null,
-        createdAt: now,
-      })
-      .returning()
-  )[0]!;
+  const usernames = extractMentionUsernames(input.body);
+  // Resolve by exact username; unknown tokens are left as plain text.
+  const mentionedUsers =
+    usernames.length > 0
+      ? await db
+          .select({ id: users.id, username: users.username, name: users.name })
+          .from(users)
+          .where(inArray(users.username, usernames))
+      : [];
 
-  // A reply bumps updatedAt so list ordering reflects real activity.
-  await db.update(tickets).set({ updatedAt: now }).where(eq(tickets.id, ticketId));
+  // Self-mentions are noise for the "mentioned me" badge; skip storing them.
+  const targets = mentionedUsers.filter((u) => u.id !== input.authorId);
 
-  return created;
+  const created = await db.transaction(async (tx) => {
+    const row = (
+      await tx
+        .insert(comments)
+        .values({
+          ticketId,
+          body: input.body,
+          isInternal: input.isInternal ?? false,
+          authorId: input.authorId ?? null,
+          authorEmail: input.authorEmail ?? null,
+          createdAt: now,
+        })
+        .returning()
+    )[0]!;
+
+    if (targets.length > 0) {
+      await tx.insert(commentMentions).values(
+        targets.map((u) => ({
+          commentId: row.id,
+          ticketId,
+          userId: u.id,
+          createdAt: now,
+        })),
+      );
+    }
+
+    // A reply bumps updatedAt so list ordering reflects real activity.
+    await tx.update(tickets).set({ updatedAt: now }).where(eq(tickets.id, ticketId));
+    return row;
+  });
+
+  return {
+    ...created,
+    mentions: targets
+      .map((u) => ({ userId: u.id, username: u.username, name: u.name }))
+      .sort((a, b) => a.username.localeCompare(b.username)),
+  };
+}
+
+/**
+ * Mark every unread mention of `userId` on this ticket as read. Opening the
+ * ticket is the only read signal — there is no per-comment inbox.
+ */
+export async function markMentionsRead(
+  db: Db,
+  ticketId: number,
+  userId: number,
+): Promise<number> {
+  const now = nowIso();
+  const updated = await db
+    .update(commentMentions)
+    .set({ readAt: now })
+    .where(
+      and(
+        eq(commentMentions.ticketId, ticketId),
+        eq(commentMentions.userId, userId),
+        isNull(commentMentions.readAt),
+      ),
+    )
+    .returning({ id: commentMentions.id });
+  return updated.length;
 }
 
 /**

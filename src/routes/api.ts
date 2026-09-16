@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import type { Db } from '../db/index.ts';
 import { PERMISSIONS, TICKET_PRIORITIES, TICKET_STATUSES } from '../db/schema.ts';
@@ -15,6 +16,12 @@ import {
   verifyToken,
 } from '../auth.ts';
 import * as svc from '../services/tickets.ts';
+
+/**
+ * Multipart framing (boundary + part headers) sits on top of the file bytes.
+ * bodyLimit applies to the whole request, so leave headroom above the file cap.
+ */
+const ATTACHMENT_BODY_LIMIT = svc.MAX_ATTACHMENT_BYTES + 64 * 1024;
 
 /**
  * Who is making the request, resolved from a bearer token.
@@ -143,6 +150,13 @@ const listQuerySchema = z.object({
   order: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
   offset: z.coerce.number().int().min(0).optional(),
+  /** `me` = tickets where the authenticated user was @-mentioned. */
+  mentioned: z.enum(['me']).optional(),
+  /** With `mentioned=me`, keep only tickets with an unread mention. */
+  mentionUnread: z
+    .union([z.literal('1'), z.literal('true'), z.literal('0'), z.literal('false')])
+    .optional()
+    .transform((v) => v === '1' || v === 'true'),
 });
 
 const loginSchema = z.object({
@@ -365,7 +379,19 @@ export function apiRoutes(db: Db, opts: ApiOptions) {
     const parsed = listQuerySchema.safeParse(c.req.query());
     if (!parsed.success) return c.json({ error: 'invalid query', issues: issues(parsed.error) }, 400);
 
-    const result = await svc.listTickets(db, parsed.data);
+    const principal = c.get('auth');
+    const { mentioned, mentionUnread, ...listOpts } = parsed.data;
+
+    if (mentioned === 'me' && principal.userId == null) {
+      return c.json({ error: 'mentioned=me requires a user-bound token' }, 400);
+    }
+
+    const result = await svc.listTickets(db, {
+      ...listOpts,
+      mentionedUserId: mentioned === 'me' ? principal.userId! : undefined,
+      mentionUnread: mentioned === 'me' ? mentionUnread : undefined,
+      viewerUserId: principal.userId ?? undefined,
+    });
     return c.json({
       items: result.items,
       total: result.total,
@@ -378,11 +404,14 @@ export function apiRoutes(db: Db, opts: ApiOptions) {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
 
-    const ticket = await svc.getTicket(db, id);
+    const principal = c.get('auth');
+    const ticket = await svc.getTicket(db, id, principal.userId ?? undefined);
     if (!ticket) return c.json({ error: 'ticket not found' }, 404);
 
-    // Public API callers never see internal notes unless they explicitly ask.
-    const includeInternal = c.req.query('includeInternal') === 'true';
+    // Internal notes require tickets.write; the query flag alone is not enough.
+    const includeInternal =
+      c.req.query('includeInternal') === 'true' &&
+      principal.permissions.includes('tickets.write');
     const [commentList, attachmentList, eventList] = await Promise.all([
       svc.listComments(db, id, { includeInternal }),
       svc.listAttachments(db, id),
@@ -394,6 +423,24 @@ export function apiRoutes(db: Db, opts: ApiOptions) {
       attachments: attachmentList,
       events: eventList,
     });
+  });
+
+  /**
+   * Clear the "mentioned you" unread badge for the current user on this ticket.
+   * Opening the ticket in the UI is the only read signal; GET stays idempotent.
+   */
+  api.post('/tickets/:id/mentions/read', can('tickets.read'), async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+
+    const principal = c.get('auth');
+    if (principal.userId == null) {
+      return c.json({ error: 'a user-bound token is required' }, 400);
+    }
+    if (!(await svc.getTicket(db, id))) return c.json({ error: 'ticket not found' }, 404);
+
+    const marked = await svc.markMentionsRead(db, id, principal.userId);
+    return c.json({ marked });
   });
 
   api.post('/tickets', can('tickets.write'), async (c) => {
@@ -450,7 +497,10 @@ export function apiRoutes(db: Db, opts: ApiOptions) {
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
     if (!(await svc.getTicket(db, id))) return c.json({ error: 'ticket not found' }, 404);
 
-    const includeInternal = c.req.query('includeInternal') === 'true';
+    const principal = c.get('auth');
+    const includeInternal =
+      c.req.query('includeInternal') === 'true' &&
+      principal.permissions.includes('tickets.write');
     return c.json({ items: await svc.listComments(db, id, { includeInternal }) });
   });
 
@@ -496,46 +546,64 @@ export function apiRoutes(db: Db, opts: ApiOptions) {
     return c.json({ items: await svc.listAttachments(db, id) });
   });
 
-  api.post('/tickets/:id/attachments', can('tickets.write'), async (c) => {
-    const id = Number(c.req.param('id'));
-    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+  api.post(
+    '/tickets/:id/attachments',
+    can('tickets.write'),
+    // Early Content-Length / streamed body cap; file-part read below is the
+    // tighter per-file check (MAX_ATTACHMENT_BYTES) once multipart is parsed.
+    bodyLimit({
+      maxSize: ATTACHMENT_BODY_LIMIT,
+      onError: (c) =>
+        c.json({ error: `file too large (max ${svc.MAX_ATTACHMENT_BYTES} bytes)` }, 413),
+    }),
+    async (c) => {
+      const id = Number(c.req.param('id'));
+      if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
 
-    const body = await c.req.parseBody({ all: true }).catch(() => null);
-    if (body == null) return c.json({ error: 'invalid multipart body' }, 400);
+      const body = await c.req.parseBody({ all: true }).catch(() => null);
+      if (body == null) return c.json({ error: 'invalid multipart body' }, 400);
 
-    const file = body['file'];
-    if (!(file instanceof File)) {
-      return c.json({ error: 'file is required' }, 422);
-    }
+      const file = body['file'];
+      if (!(file instanceof File)) {
+        return c.json({ error: 'file is required' }, 422);
+      }
 
-    const buf = new Uint8Array(await file.arrayBuffer());
-    const principal = c.get('auth');
-    const result = await svc.addAttachment(db, id, attachmentsDir, {
-      filename: file.name || 'file',
-      contentType: file.type || undefined,
-      data: buf,
-      uploadedById: principal.userId,
-    });
-
-    if (!result.ok) {
-      if (result.error === 'ticket_not_found') return c.json({ error: 'ticket not found' }, 404);
-      if (result.error === 'too_large') {
+      const capped = await svc.readBlobCapped(file, svc.MAX_ATTACHMENT_BYTES);
+      if (!capped.ok) {
         return c.json(
           { error: `file too large (max ${svc.MAX_ATTACHMENT_BYTES} bytes)` },
           413,
         );
       }
-      if (result.error === 'too_many') {
-        return c.json(
-          { error: `too many attachments (max ${svc.MAX_ATTACHMENTS_PER_TICKET})` },
-          422,
-        );
-      }
-      return c.json({ error: 'empty file' }, 422);
-    }
 
-    return c.json(result.attachment, 201);
-  });
+      const principal = c.get('auth');
+      const result = await svc.addAttachment(db, id, attachmentsDir, {
+        filename: file.name || 'file',
+        contentType: file.type || undefined,
+        data: capped.data,
+        uploadedById: principal.userId,
+      });
+
+      if (!result.ok) {
+        if (result.error === 'ticket_not_found') return c.json({ error: 'ticket not found' }, 404);
+        if (result.error === 'too_large') {
+          return c.json(
+            { error: `file too large (max ${svc.MAX_ATTACHMENT_BYTES} bytes)` },
+            413,
+          );
+        }
+        if (result.error === 'too_many') {
+          return c.json(
+            { error: `too many attachments (max ${svc.MAX_ATTACHMENTS_PER_TICKET})` },
+            422,
+          );
+        }
+        return c.json({ error: 'empty file' }, 422);
+      }
+
+      return c.json(result.attachment, 201);
+    },
+  );
 
   api.get('/tickets/:id/attachments/:aid', can('tickets.read'), async (c) => {
     const id = Number(c.req.param('id'));

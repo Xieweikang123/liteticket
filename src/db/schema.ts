@@ -221,6 +221,40 @@ export const comments = sqliteTable(
   (t) => [index('comments_ticket_idx').on(t.ticketId)],
 );
 
+/**
+ * Who was @-mentioned in a comment. Rows are written at comment create time by
+ * resolving `@username` tokens against the users table — not re-parsed on read —
+ * so the ticket list can filter "mentioned me" without scanning comment bodies.
+ *
+ * `ticketId` is denormalised so that filter is a single indexed lookup.
+ * `readAt` is null until the mentioned user opens the ticket; the list badge
+ * uses that to distinguish unread mentions from historical ones.
+ */
+export const commentMentions = sqliteTable(
+  'comment_mentions',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    commentId: integer('comment_id')
+      .notNull()
+      .references(() => comments.id, { onDelete: 'cascade' }),
+    ticketId: integer('ticket_id')
+      .notNull()
+      .references(() => tickets.id, { onDelete: 'cascade' }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: text('created_at')
+      .notNull()
+      .default(sqlNow()),
+    readAt: text('read_at'),
+  },
+  (t) => [
+    uniqueIndex('comment_mentions_unique').on(t.commentId, t.userId),
+    index('comment_mentions_ticket_user_idx').on(t.ticketId, t.userId),
+    index('comment_mentions_user_unread_idx').on(t.userId, t.readAt),
+  ],
+);
+
 export const tags = sqliteTable(
   'tags',
   {
@@ -309,6 +343,7 @@ export type User = typeof users.$inferSelect;
 export type Ticket = typeof tickets.$inferSelect;
 export type NewTicket = typeof tickets.$inferInsert;
 export type Comment = typeof comments.$inferSelect;
+export type CommentMention = typeof commentMentions.$inferSelect;
 export type Tag = typeof tags.$inferSelect;
 export type Setting = typeof settings.$inferSelect;
 export type Role = typeof roles.$inferSelect;

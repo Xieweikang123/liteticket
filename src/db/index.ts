@@ -115,6 +115,18 @@ const BOOTSTRAP_SQL = [
    )`,
   `CREATE INDEX IF NOT EXISTS comments_ticket_idx ON comments (ticket_id)`,
 
+  `CREATE TABLE IF NOT EXISTS comment_mentions (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+     ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+     read_at TEXT
+   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS comment_mentions_unique ON comment_mentions (comment_id, user_id)`,
+  `CREATE INDEX IF NOT EXISTS comment_mentions_ticket_user_idx ON comment_mentions (ticket_id, user_id)`,
+  `CREATE INDEX IF NOT EXISTS comment_mentions_user_unread_idx ON comment_mentions (user_id, read_at)`,
+
   `CREATE TABLE IF NOT EXISTS tags (
      id INTEGER PRIMARY KEY AUTOINCREMENT,
      name TEXT NOT NULL
