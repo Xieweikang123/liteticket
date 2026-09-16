@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api.ts';
-import type { Attachment, AuthUser, Comment, Ticket, TicketEvent } from '../api.ts';
+import type { Attachment, AuthUser, Comment, MentionRef, Ticket, TicketEvent } from '../api.ts';
 import { useAuth, can } from '../auth.tsx';
 import {
+  AttachmentPreview,
   ConfirmButton,
   Empty,
   ErrorBox,
   Field,
+  Lightbox,
   Loading,
   PriorityPill,
   StatusPill,
+  extractFilesFromEvent,
+  formatBytes,
   formatTime,
 } from '../ui.tsx';
 
@@ -48,10 +52,34 @@ function formatEventValue(field: string, value: string | null): string {
   return value;
 }
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+/**
+ * Highlight resolved @username tokens. Unknown `@…` strings stay plain text so
+ * a typo does not look like a real mention.
+ */
+function CommentBody({ body, mentions = [] }: { body: string; mentions?: MentionRef[] }) {
+  const known = new Map(mentions.map((m) => [m.username.toLowerCase(), m]));
+  const nodes: React.ReactNode[] = [];
+  let last = 0;
+  const re = /(?:^|[^a-zA-Z0-9._-])(@[a-zA-Z0-9._-]+)/g;
+  for (const m of body.matchAll(re)) {
+    const full = m[0]!;
+    const handle = m[1]!;
+    const atIdx = m.index! + full.length - handle.length;
+    if (last < atIdx) nodes.push(body.slice(last, atIdx));
+    const ref = known.get(handle.slice(1).toLowerCase());
+    if (ref) {
+      nodes.push(
+        <span key={atIdx} className="mention" title={ref.name}>
+          @{ref.username}
+        </span>,
+      );
+    } else {
+      nodes.push(handle);
+    }
+    last = atIdx + handle.length;
+  }
+  if (last < body.length) nodes.push(body.slice(last));
+  return <>{nodes}</>;
 }
 
 /**
@@ -80,12 +108,15 @@ export function TicketView({
   /** The ticket is gone; the caller must leave or close. */
   onDeleted?: () => void;
 }) {
-  const { permissions } = useAuth();
+  const { permissions, user } = useAuth();
 
   const [ticket, setTicket] = useState<Full | null>(null);
   const [users, setUsers] = useState<AuthUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
+  const onChangedRef = useRef(onChanged);
+  onChangedRef.current = onChanged;
+  const markedReadFor = useRef<number | null>(null);
 
   /**
    * `initial` marks the first load only. A refresh after a mutation must not
@@ -102,7 +133,7 @@ export function TicketView({
         // tickets without being able to list users. Fetch separately so a
         // denied user list leaves the ticket — and the reply form — usable.
         const [t, u] = await Promise.all([
-          api.getTicket(id),
+          api.getTicket(id, can(permissions, 'tickets.write')),
           can(permissions, 'users.read') ? api.listUsers() : Promise.resolve({ items: [] }),
         ]);
         setTicket(t);
@@ -118,8 +149,26 @@ export function TicketView({
   );
 
   useEffect(() => {
+    markedReadFor.current = null;
     if (Number.isInteger(id)) void load({ initial: true });
   }, [id, load]);
+
+  // Opening the ticket clears the list badge. Kept out of `load` so a parent
+  // `onChanged` identity change cannot re-trigger the fetch loop.
+  useEffect(() => {
+    if (!user || !ticket?.mentionUnread) return;
+    if (markedReadFor.current === ticket.id) return;
+    markedReadFor.current = ticket.id;
+    void api
+      .markMentionsRead(ticket.id)
+      .then(() => {
+        setTicket((t) => (t && t.id === ticket.id ? { ...t, mentionUnread: false } : t));
+        onChangedRef.current?.();
+      })
+      .catch(() => {
+        /* badge clear is best-effort */
+      });
+  }, [user, ticket?.id, ticket?.mentionUnread]);
 
   async function patch(fields: Record<string, unknown>) {
     setError(null);
@@ -165,6 +214,11 @@ export function TicketView({
       <Section>
         <div className="muted small meta-line">
           #{ticket.id} · 创建 {formatTime(ticket.createdAt)} · 更新 {formatTime(ticket.updatedAt)}
+          {ticket.mentionedMe && (
+            <span className={`pill mention${ticket.mentionUnread ? ' unread' : ''}`} style={{ marginLeft: 8 }}>
+              {ticket.mentionUnread ? '有人提到你' : '曾提到你'}
+            </span>
+          )}
         </div>
         <h2 className="ticket-subject">{ticket.subject}</h2>
         <div className="row" style={{ marginBottom: 14, gap: 8 }}>
@@ -303,13 +357,16 @@ export function TicketView({
                   </span>
                 )}
               </div>
-              <div style={{ whiteSpace: 'pre-wrap' }}>{c.body}</div>
+              <div style={{ whiteSpace: 'pre-wrap' }}>
+                <CommentBody body={c.body} mentions={c.mentions} />
+              </div>
             </div>
           ))
         )}
         {canWrite && (
           <CommentForm
             ticketId={id}
+            users={users}
             onAdded={() => {
               void load();
               onChanged?.();
@@ -336,13 +393,15 @@ function AttachmentList({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [lightbox, setLightbox] = useState<{ src: string; filename: string } | null>(null);
 
-  async function onPick(files: FileList | null) {
-    if (!files?.length) return;
+  async function uploadFiles(files: File[]) {
+    if (!files.length) return;
     setBusy(true);
     onError(null);
     try {
-      for (const file of Array.from(files)) {
+      for (const file of files) {
         await api.uploadAttachment(ticketId, file);
       }
       onChanged();
@@ -352,6 +411,10 @@ function AttachmentList({
       setBusy(false);
       if (inputRef.current) inputRef.current.value = '';
     }
+  }
+
+  function onPick(files: FileList | null) {
+    if (files) void uploadFiles(Array.from(files));
   }
 
   async function download(a: Attachment) {
@@ -378,42 +441,197 @@ function AttachmentList({
       {items.length === 0 ? (
         <Empty label="还没有附件" />
       ) : (
-        <ul className="attach-list">
+        <div className="attach-grid">
           {items.map((a) => (
-            <li key={a.id} className="attach-row">
-              <button type="button" className="linkish" onClick={() => void download(a)}>
-                {a.filename}
-              </button>
-              <span className="muted small">{formatBytes(a.size)}</span>
-              <span className="muted small">{formatTime(a.createdAt)}</span>
-              {canWrite && (
-                <ConfirmButton label="删除" question="删除此附件？" onConfirm={() => remove(a)} />
-              )}
-            </li>
+            <div key={a.id} className="attach-card">
+              <div className="attach-card-thumb">
+                <AttachmentPreview
+                  ticketId={ticketId}
+                  attachment={a}
+                  onOpenLightbox={(src, filename) => setLightbox({ src, filename })}
+                />
+              </div>
+              <div className="attach-card-body">
+                <div className="attach-card-name" title={a.filename}>
+                  {a.filename}
+                </div>
+                <div className="attach-card-meta">
+                  <span>{formatBytes(a.size)}</span>
+                  <span>{formatTime(a.createdAt)}</span>
+                </div>
+                <div className="attach-card-actions">
+                  <button
+                    type="button"
+                    className="ghost sm"
+                    onClick={() => void download(a)}
+                  >
+                    下载
+                  </button>
+                  {canWrite && (
+                    <ConfirmButton
+                      label="删除"
+                      question="删除此附件？"
+                      onConfirm={() => remove(a)}
+                    />
+                  )}
+                </div>
+              </div>
+            </div>
           ))}
-        </ul>
+        </div>
       )}
       {canWrite && (
-        <div className="row" style={{ marginTop: 10 }}>
+        <div
+          className={`attach-dropzone${isDragging ? ' active' : ''}`}
+          onClick={() => inputRef.current?.click()}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setIsDragging(true);
+          }}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+              setIsDragging(false);
+            }
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            setIsDragging(false);
+            const files = extractFilesFromEvent(e);
+            if (files.length > 0) void uploadFiles(files);
+          }}
+        >
           <input
             ref={inputRef}
             type="file"
             multiple
             disabled={busy}
-            onChange={(e) => void onPick(e.target.files)}
+            style={{ display: 'none' }}
+            onChange={(e) => onPick(e.target.files)}
           />
-          {busy && <span className="muted small">上传中…</span>}
+          <div className="attach-dropzone-inner">
+            {busy ? (
+              <span className="muted small">
+                <span className="spinner" /> 正在上传附件…
+              </span>
+            ) : (
+              <>
+                <span>
+                  <strong>点击上传</strong> 或将文件拖拽至此处
+                </span>
+                <span className="small muted">支持图片、文档等（单个最大 10 MB）</span>
+              </>
+            )}
+          </div>
         </div>
+      )}
+      {lightbox && (
+        <Lightbox
+          src={lightbox.src}
+          filename={lightbox.filename}
+          onClose={() => setLightbox(null)}
+        />
       )}
     </>
   );
 }
 
-function CommentForm({ ticketId, onAdded }: { ticketId: number; onAdded: () => void }) {
+function CommentForm({
+  ticketId,
+  users,
+  onAdded,
+}: {
+  ticketId: number;
+  users: AuthUser[];
+  onAdded: () => void;
+}) {
   const [body, setBody] = useState('');
   const [isInternal, setIsInternal] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [mention, setMention] = useState<{
+    query: string;
+    start: number;
+    end: number;
+  } | null>(null);
+  const [pickIndex, setPickIndex] = useState(0);
+
+  const suggestions =
+    mention && users.length > 0
+      ? users
+          .filter((u) => {
+            const q = mention.query.toLowerCase();
+            return (
+              u.username.toLowerCase().includes(q) || u.name.toLowerCase().includes(q)
+            );
+          })
+          .slice(0, 8)
+      : [];
+
+  async function handleUploadFiles(files: File[]) {
+    if (!files.length) return;
+    setUploading(true);
+    setError(null);
+    try {
+      for (const file of files) {
+        const a = await api.uploadAttachment(ticketId, file);
+        const insertText = `[附件: ${a.filename}] `;
+        const el = textareaRef.current;
+        if (el) {
+          const start = el.selectionStart ?? body.length;
+          const end = el.selectionEnd ?? body.length;
+          setBody((prev) => prev.slice(0, start) + insertText + prev.slice(end));
+        } else {
+          setBody((prev) => (prev ? `${prev} ${insertText}` : insertText));
+        }
+      }
+      onAdded();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const files = extractFilesFromEvent(e);
+    if (files.length > 0) {
+      e.preventDefault();
+      void handleUploadFiles(files);
+    }
+  }
+
+  function syncMention(value: string, caret: number) {
+    // Find an open `@token` immediately before the caret — no spaces inside.
+    const before = value.slice(0, caret);
+    const m = before.match(/(^|[^a-zA-Z0-9._-])@([a-zA-Z0-9._-]*)$/);
+    if (!m || users.length === 0) {
+      setMention(null);
+      return;
+    }
+    const atStart = before.length - m[2]!.length - 1;
+    setMention({ query: m[2]!, start: atStart, end: caret });
+    setPickIndex(0);
+  }
+
+  function insertMention(user: AuthUser) {
+    if (!mention) return;
+    const before = body.slice(0, mention.start);
+    const after = body.slice(mention.end);
+    const inserted = `@${user.username} `;
+    const next = before + inserted + after;
+    setBody(next);
+    setMention(null);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      const pos = before.length + inserted.length;
+      el.focus();
+      el.setSelectionRange(pos, pos);
+    });
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -424,6 +642,7 @@ function CommentForm({ ticketId, onAdded }: { ticketId: number; onAdded: () => v
       await api.addComment(ticketId, { body, isInternal });
       setBody('');
       setIsInternal(false);
+      setMention(null);
       onAdded();
     } catch (err) {
       setError(err);
@@ -433,14 +652,92 @@ function CommentForm({ ticketId, onAdded }: { ticketId: number; onAdded: () => v
   }
 
   return (
-    <form onSubmit={submit} style={{ marginTop: 12 }}>
+    <form onSubmit={submit} style={{ marginTop: 12 }} className="comment-form">
       <ErrorBox error={error} />
-      <textarea
-        value={body}
-        onChange={(e) => setBody(e.target.value)}
-        placeholder="写下回复…"
-        required
-      />
+      <div
+        className="mention-wrap dropzone-wrap"
+        onDragOver={(e) => {
+          e.preventDefault();
+          setIsDragging(true);
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+            setIsDragging(false);
+          }
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setIsDragging(false);
+          const files = extractFilesFromEvent(e);
+          if (files.length > 0) void handleUploadFiles(files);
+        }}
+      >
+        {isDragging && (
+          <div className="dropzone-overlay">
+            <span>📥 松开鼠标上传为附件</span>
+          </div>
+        )}
+        <textarea
+          ref={textareaRef}
+          value={body}
+          onPaste={onPaste}
+          onChange={(e) => {
+            const value = e.target.value;
+            setBody(value);
+            syncMention(value, e.target.selectionStart);
+          }}
+          onKeyDown={(e) => {
+            if (!mention || suggestions.length === 0) return;
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              setPickIndex((i) => (i + 1) % suggestions.length);
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              setPickIndex((i) => (i - 1 + suggestions.length) % suggestions.length);
+            } else if (e.key === 'Enter' || e.key === 'Tab') {
+              e.preventDefault();
+              insertMention(suggestions[pickIndex]!);
+            } else if (e.key === 'Escape') {
+              setMention(null);
+            }
+          }}
+          onClick={(e) => syncMention(body, e.currentTarget.selectionStart)}
+          onKeyUp={(e) => {
+            if (['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(e.key)) return;
+            syncMention(body, e.currentTarget.selectionStart);
+          }}
+          placeholder={users.length > 0 ? '写下回复… 输入 @ 可提及用户' : '写下回复…'}
+          required
+        />
+        {mention && suggestions.length > 0 && (
+          <ul className="mention-menu" role="listbox">
+            {suggestions.map((u, i) => (
+              <li key={u.id}>
+                <button
+                  type="button"
+                  className={i === pickIndex ? 'active' : undefined}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    insertMention(u);
+                  }}
+                >
+                  <strong>@{u.username}</strong>
+                  <span className="muted">{u.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div className="dropzone-hint">
+        {uploading ? (
+          <span style={{ color: 'var(--primary)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span className="spinner" /> 正在上传附件…
+          </span>
+        ) : (
+          <span>提示：支持截图后直接 <code>Ctrl+V</code> 粘贴上传，或拖拽文件至输入框</span>
+        )}
+      </div>
       <div className="row" style={{ marginTop: 8 }}>
         <label className="small" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <input
@@ -451,7 +748,7 @@ function CommentForm({ ticketId, onAdded }: { ticketId: number; onAdded: () => v
           />
           内部备注（请求人不可见）
         </label>
-        <button className="primary" type="submit" disabled={busy || !body.trim()}>
+        <button className="primary" type="submit" disabled={busy || uploading || !body.trim()}>
           {busy ? '发送中…' : '发送'}
         </button>
       </div>

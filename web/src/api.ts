@@ -64,6 +64,17 @@ export interface Ticket {
   closedAt: string | null;
   tags?: string[];
   assigneeName?: string | null;
+  commentCount?: number;
+  /** True when the current user was @-mentioned on this ticket. */
+  mentionedMe?: boolean;
+  /** True when the current user has an unread mention on this ticket. */
+  mentionUnread?: boolean;
+}
+
+export interface MentionRef {
+  userId: number;
+  username: string;
+  name: string;
 }
 
 export interface Comment {
@@ -74,6 +85,7 @@ export interface Comment {
   authorEmail: string | null;
   isInternal: boolean;
   createdAt: string;
+  mentions?: MentionRef[];
 }
 
 export interface Attachment {
@@ -242,10 +254,19 @@ export const api = {
     order?: 'asc' | 'desc';
     limit?: number;
     offset?: number;
+    /** Tickets where the current user was @-mentioned. */
+    mentioned?: 'me';
+    /** With `mentioned=me`, only tickets with an unread mention. */
+    mentionUnread?: boolean;
   } = {}) => {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== '') qs.set(k, String(v));
+      if (v === undefined || v === '') continue;
+      if (k === 'mentionUnread') {
+        if (v) qs.set(k, '1');
+        continue;
+      }
+      qs.set(k, String(v));
     }
     const suffix = qs.toString() ? `?${qs}` : '';
     return request<{ items: Ticket[]; total: number; limit: number; offset: number }>(
@@ -253,10 +274,15 @@ export const api = {
     );
   },
 
-  getTicket: (id: number, includeInternal = true) =>
+  /** Pass `includeInternal` only when the session has `tickets.write`. */
+  getTicket: (id: number, includeInternal = false) =>
     request<Ticket & { comments: Comment[]; attachments: Attachment[]; events: TicketEvent[] }>(
       `/tickets/${id}${includeInternal ? '?includeInternal=true' : ''}`,
     ),
+
+  /** Clear unread @-mention badges for the current user on this ticket. */
+  markMentionsRead: (id: number) =>
+    request<{ marked: number }>(`/tickets/${id}/mentions/read`, { method: 'POST' }),
 
   createTicket: (input: {
     subject: string;
@@ -289,12 +315,11 @@ export const api = {
     request<void>(`/tickets/${ticketId}/attachments/${attachmentId}`, { method: 'DELETE' }),
 
   /**
-   * Download via a plain fetch so the Authorization header is attached — a
-   * bare `<a href>` cannot send it, and the API rejects anonymous GETs.
+   * Fetch the raw attachment blob with Authorization header attached.
    */
-  downloadAttachment: async (ticketId: number, attachment: Attachment) => {
+  fetchAttachmentBlob: async (ticketId: number, attachmentId: number): Promise<Blob> => {
     const token = getToken();
-    const res = await fetch(`/api/tickets/${ticketId}/attachments/${attachment.id}`, {
+    const res = await fetch(`/api/tickets/${ticketId}/attachments/${attachmentId}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (res.status === 401) {
@@ -302,8 +327,16 @@ export const api = {
       onUnauthorized?.();
       throw new ApiError(401, '登录已失效，请重新登录');
     }
-    if (!res.ok) throw new ApiError(res.status, `下载失败 (${res.status})`);
-    const blob = await res.blob();
+    if (!res.ok) throw new ApiError(res.status, `获取附件失败 (${res.status})`);
+    return await res.blob();
+  },
+
+  /**
+   * Download via a plain fetch so the Authorization header is attached — a
+   * bare `<a href>` cannot send it, and the API rejects anonymous GETs.
+   */
+  downloadAttachment: async (ticketId: number, attachment: Attachment) => {
+    const blob = await api.fetchAttachmentBlob(ticketId, attachment.id);
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

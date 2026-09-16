@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api.ts';
-import type { AuthUser, Stats, Ticket } from '../api.ts';
+import type { Stats, Ticket } from '../api.ts';
 import { useAuth, can } from '../auth.tsx';
 import { TicketView } from './TicketView.tsx';
 import {
@@ -14,6 +14,8 @@ import {
   PriorityPill,
   StatusCounts,
   StatusPill,
+  extractFilesFromEvent,
+  formatBytes,
   formatTime,
 } from '../ui.tsx';
 
@@ -33,6 +35,8 @@ export function TicketListPage() {
   const status = params.get('status') ?? '';
   const q = params.get('q') ?? '';
   const tag = params.get('tag') ?? '';
+  const mentioned = params.get('mentioned') === 'me' ? 'me' : '';
+  const mentionUnread = params.get('mentionUnread') === '1';
   const page = Math.max(1, Number(params.get('page')) || 1);
   const size = PAGE_SIZES.includes(Number(params.get('size')))
     ? Number(params.get('size'))
@@ -42,7 +46,6 @@ export function TicketListPage() {
 
   const { permissions } = useAuth();
   const [items, setItems] = useState<Ticket[]>([]);
-  const [users, setUsers] = useState<AuthUser[]>([]);
   const [total, setTotal] = useState(0);
   const [counts, setCounts] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -58,24 +61,29 @@ export function TicketListPage() {
     setLoading(true);
     setError(null);
     try {
-      // The edit drawer's assignee picker needs users, but a role may be able
-      // to work tickets without being able to list users. Fetch separately so a
-      // denied user list leaves the table — and its edit button — usable.
-      const [list, stats, u] = await Promise.all([
-        api.listTickets({ status, q, tag, sort, order, limit: size, offset: (page - 1) * size }),
+      const [list, stats] = await Promise.all([
+        api.listTickets({
+          status,
+          q,
+          tag,
+          sort,
+          order,
+          limit: size,
+          offset: (page - 1) * size,
+          mentioned: mentioned || undefined,
+          mentionUnread: mentioned ? mentionUnread : undefined,
+        }),
         api.stats(),
-        can(permissions, 'users.read') ? api.listUsers() : Promise.resolve({ items: [] }),
       ]);
       setItems(list.items);
       setTotal(list.total);
       setCounts(stats);
-      setUsers(u.items);
     } catch (err) {
       setError(err);
     } finally {
       setLoading(false);
     }
-  }, [status, q, tag, sort, order, page, size, permissions]);
+  }, [status, q, tag, mentioned, mentionUnread, sort, order, page, size]);
 
   useEffect(() => {
     void load();
@@ -114,6 +122,22 @@ export function TicketListPage() {
     const p = new URLSearchParams(params);
     if (next) p.set('status', next);
     else p.delete('status');
+    p.delete('page');
+    setParams(p, { replace: true });
+  }
+
+  function setMentionedFilter(next: '' | 'me' | 'unread') {
+    const p = new URLSearchParams(params);
+    if (next === 'me') {
+      p.set('mentioned', 'me');
+      p.delete('mentionUnread');
+    } else if (next === 'unread') {
+      p.set('mentioned', 'me');
+      p.set('mentionUnread', '1');
+    } else {
+      p.delete('mentioned');
+      p.delete('mentionUnread');
+    }
     p.delete('page');
     setParams(p, { replace: true });
   }
@@ -175,12 +199,14 @@ export function TicketListPage() {
           counts && <StatusCounts counts={counts} active={status} onSelect={setStatus} />
         }
       >
-        <button className="primary" onClick={() => setCreating(true)}>
-          新建工单
-        </button>
+        {canWrite && (
+          <button className="primary" onClick={() => setCreating(true)}>
+            新建工单
+          </button>
+        )}
       </PageHead>
 
-      {creating && (
+      {canWrite && creating && (
         <NewTicketDrawer
           onClose={() => setCreating(false)}
           onCreated={() => {
@@ -229,7 +255,21 @@ export function TicketListPage() {
               标签 {tag} ✕
             </button>
           )}
-          {(q || status || tag) && (
+          <button
+            type="button"
+            className={mentioned && !mentionUnread ? 'active' : undefined}
+            onClick={() => setMentionedFilter(mentioned && !mentionUnread ? '' : 'me')}
+          >
+            提及我的
+          </button>
+          <button
+            type="button"
+            className={mentionUnread ? 'active' : undefined}
+            onClick={() => setMentionedFilter(mentionUnread ? '' : 'unread')}
+          >
+            未读提及
+          </button>
+          {(q || status || tag || mentioned) && (
             <button
               className="link"
               onClick={() => setParams(new URLSearchParams(), { replace: true })}
@@ -254,19 +294,12 @@ export function TicketListPage() {
                   {sortHeader('priority', '优先级', { center: true })}
                   <th style={{ width: 180 }}>请求人</th>
                   {sortHeader('updated', '更新时间', { right: true })}
-                  {canWrite && <th className="col-center" style={{ width: 116 }}>操作</th>}
+                  <th className="col-center" style={{ width: 72 }}>操作</th>
                 </tr>
               </thead>
               <tbody>
                 {items.map((t) => (
-                  <TicketRow
-                    key={t.id}
-                    row={t}
-                    users={users}
-                    canWrite={canWrite}
-                    onChanged={load}
-                    onError={setError}
-                  />
+                  <TicketRow key={t.id} row={t} onChanged={load} />
                 ))}
               </tbody>
             </table>
@@ -314,20 +347,7 @@ export function TicketListPage() {
   );
 }
 
-function TicketRow({
-  row,
-  users,
-  canWrite,
-  onChanged,
-  onError,
-}: {
-  row: Ticket;
-  users: AuthUser[];
-  canWrite: boolean;
-  onChanged: () => void;
-  onError: (e: unknown) => void;
-}) {
-  const [editing, setEditing] = useState(false);
+function TicketRow({ row, onChanged }: { row: Ticket; onChanged: () => void }) {
   const [viewing, setViewing] = useState(false);
 
   return (
@@ -337,12 +357,17 @@ function TicketRow({
         <td>
           {/* The subject stays a plain link to the canonical detail page — a
               deep link, a bookmark, and the browser probes all depend on that
-              route rendering. 查看 in the actions column opens the same view as
-              a sheet, which is the way to look at a ticket without losing the
-              filters, sort, and scroll position. */}
+              route rendering. 查看 opens the same TicketView as a sheet so
+              filters, sort, and scroll position survive; edits live only in
+              that view's「处理」section. */}
           <Link to={`/tickets/${row.id}`}>{row.subject}</Link>
-          {(row.tags ?? []).length > 0 && (
+          {(row.mentionedMe || (row.tags ?? []).length > 0) && (
             <div style={{ marginTop: 3 }}>
+              {row.mentionedMe && (
+                <span className={`pill mention${row.mentionUnread ? ' unread' : ''}`}>
+                  {row.mentionUnread ? '提到你' : '曾提到你'}
+                </span>
+              )}
               {(row.tags ?? []).map((name) => (
                 <span className="tag" key={name}>
                   {name}
@@ -366,33 +391,16 @@ function TicketRow({
           </div>
         </td>
         <td className="small muted time-cell">{formatTime(row.updatedAt)}</td>
-        {canWrite && (
-          <td className="col-center">
-            <div className="row-actions">
-              <button className="ghost sm" onClick={() => setViewing(true)}>
-                查看
-              </button>
-              <button className="ghost sm" onClick={() => setEditing(true)}>
-                编辑
-              </button>
-            </div>
-          </td>
-        )}
+        <td className="col-center">
+          <div className="row-actions">
+            <button className="ghost sm" onClick={() => setViewing(true)}>
+              查看
+            </button>
+          </div>
+        </td>
       </tr>
       {viewing && (
         <ViewTicketDrawer id={row.id} onClose={() => setViewing(false)} onChanged={onChanged} />
-      )}
-      {editing && (
-        <EditTicketDrawer
-          row={row}
-          users={users}
-          onClose={() => setEditing(false)}
-          onSaved={() => {
-            setEditing(false);
-            onChanged();
-          }}
-          onError={onError}
-        />
       )}
     </>
   );
@@ -401,8 +409,8 @@ function TicketRow({
 /**
  * The detail view as a sheet over the list, so checking a ticket and going back
  * to the next one does not cost a page load — the filters, the sort, and the
- * scroll position all survive. It owns the full view, including replies, so the
- * only thing left to the detail page is being linkable.
+ * scroll position all survive. TicketView owns replies and the「处理」controls;
+ * the detail page exists so a ticket stays linkable.
  */
 function ViewTicketDrawer({
   id,
@@ -420,132 +428,6 @@ function ViewTicketDrawer({
   );
 }
 
-/**
- * Editing a ticket from the list. The title stays a link to the detail page,
- * which is where replies live; this drawer only covers the fields the API's
- * PATCH accepts, so the two entry points do not overlap.
- */
-function EditTicketDrawer({
-  row,
-  users,
-  onClose,
-  onSaved,
-  onError,
-}: {
-  row: Ticket;
-  users: AuthUser[];
-  onClose: () => void;
-  onSaved: () => void;
-  onError: (e: unknown) => void;
-}) {
-  const [subject, setSubject] = useState(row.subject);
-  const [body, setBody] = useState(row.body);
-  const [status, setStatus] = useState(row.status);
-  const [priority, setPriority] = useState(row.priority);
-  const [assigneeId, setAssigneeId] = useState(row.assigneeId == null ? '' : String(row.assigneeId));
-  const [tags, setTags] = useState((row.tags ?? []).join(', '));
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<unknown>(null);
-
-  async function save(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    onError(null);
-    try {
-      await api.updateTicket(row.id, {
-        subject,
-        body,
-        status,
-        priority,
-        assigneeId: assigneeId ? Number(assigneeId) : null,
-        tags: tags
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean),
-      });
-      onSaved();
-    } catch (err) {
-      setError(err);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Drawer
-      title={`编辑工单 · #${row.id}`}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="primary" type="submit" form="edit-ticket-form" disabled={busy}>
-            {busy ? '保存中…' : '保存'}
-          </button>
-          <button type="button" onClick={onClose}>
-            取消
-          </button>
-        </>
-      }
-    >
-      <form id="edit-ticket-form" onSubmit={save}>
-        <ErrorBox error={error} />
-        <Field label="标题">
-          <input
-            value={subject}
-            onChange={(e) => setSubject(e.target.value)}
-            style={{ width: '100%' }}
-            maxLength={500}
-            required
-          />
-        </Field>
-        <Field label="描述">
-          <textarea value={body} onChange={(e) => setBody(e.target.value)} />
-        </Field>
-        <div className="row">
-          <div style={{ width: 150 }}>
-            <Field label="状态">
-              <select value={status} onChange={(e) => setStatus(e.target.value as Ticket['status'])} style={{ width: '100%' }}>
-                <option value="open">待处理</option>
-                <option value="pending">进行中</option>
-                <option value="closed">已关闭</option>
-              </select>
-            </Field>
-          </div>
-          <div style={{ width: 130 }}>
-            <Field label="优先级">
-              <select
-                value={priority}
-                onChange={(e) => setPriority(e.target.value as Ticket['priority'])}
-                style={{ width: '100%' }}
-              >
-                <option value="low">低</option>
-                <option value="normal">普通</option>
-                <option value="high">高</option>
-                <option value="urgent">紧急</option>
-              </select>
-            </Field>
-          </div>
-        </div>
-        {users.length > 0 && (
-          <Field label="负责人">
-            <select value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)} style={{ width: '100%' }}>
-              <option value="">未指派</option>
-              {users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-        )}
-        <Field label="标签（逗号分隔）">
-          <input value={tags} onChange={(e) => setTags(e.target.value)} style={{ width: '100%' }} />
-        </Field>
-      </form>
-    </Drawer>
-  );
-}
-
 function NewTicketDrawer({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
@@ -553,15 +435,26 @@ function NewTicketDrawer({ onClose, onCreated }: { onClose: () => void; onCreate
   const [requesterName, setRequesterName] = useState('');
   const [priority, setPriority] = useState('normal');
   const [tags, setTags] = useState('');
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
+
+  function handleAddFiles(files: File[]) {
+    if (!files.length) return;
+    setPendingFiles((prev) => [...prev, ...files]);
+    for (const f of files) {
+      const tag = `[附件: ${f.name}]`;
+      setBody((prev) => (prev ? `${prev}\n${tag}` : tag));
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await api.createTicket({
+      const created = await api.createTicket({
         subject,
         body,
         requesterEmail,
@@ -572,6 +465,13 @@ function NewTicketDrawer({ onClose, onCreated }: { onClose: () => void; onCreate
           .map((s) => s.trim())
           .filter(Boolean),
       });
+
+      if (pendingFiles.length > 0) {
+        for (const file of pendingFiles) {
+          await api.uploadAttachment(created.id, file);
+        }
+      }
+
       onCreated();
     } catch (err) {
       setError(err);
@@ -608,7 +508,61 @@ function NewTicketDrawer({ onClose, onCreated }: { onClose: () => void; onCreate
           />
         </Field>
         <Field label="描述">
-          <textarea value={body} onChange={(e) => setBody(e.target.value)} />
+          <div
+            className="dropzone-wrap"
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDragging(true);
+            }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                setIsDragging(false);
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              setIsDragging(false);
+              const files = extractFilesFromEvent(e);
+              if (files.length > 0) handleAddFiles(files);
+            }}
+          >
+            {isDragging && (
+              <div className="dropzone-overlay">
+                <span>📥 松开鼠标添加附件</span>
+              </div>
+            )}
+            <textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              onPaste={(e) => {
+                const files = extractFilesFromEvent(e);
+                if (files.length > 0) {
+                  e.preventDefault();
+                  handleAddFiles(files);
+                }
+              }}
+            />
+          </div>
+          <div className="dropzone-hint">
+            <span>提示：支持截图后直接 <code>Ctrl+V</code> 粘贴或拖拽文件添加为附件</span>
+          </div>
+          {pendingFiles.length > 0 && (
+            <div className="pending-files">
+              {pendingFiles.map((f, idx) => (
+                <span key={`${f.name}-${idx}`} className="pending-file-pill">
+                  <span>📎 {f.name} ({formatBytes(f.size)})</span>
+                  <button
+                    type="button"
+                    className="pending-file-remove"
+                    onClick={() => setPendingFiles((prev) => prev.filter((_, i) => i !== idx))}
+                    title="移除"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </Field>
         <Field label="请求人邮箱">
           <input

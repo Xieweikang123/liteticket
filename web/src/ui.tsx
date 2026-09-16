@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
+import { api } from './api.ts';
+import type { Attachment } from './api.ts';
 
 export const STATUS_LABEL: Record<string, string> = {
   open: '待处理',
@@ -312,3 +314,181 @@ export function Drawer({
     document.body,
   );
 }
+
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Extract files from clipboard or drag-and-drop events.
+ * For unnamed or generic images from OS screenshot tools, assign an informative filename.
+ */
+export function extractFilesFromEvent(
+  e: React.ClipboardEvent | React.DragEvent,
+): File[] {
+  const result: File[] = [];
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const timeStr = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+  if ('clipboardData' in e && e.clipboardData) {
+    const items = e.clipboardData.items;
+    if (items && items.length > 0) {
+      let imageIdx = 1;
+      for (const item of Array.from(items)) {
+        if (item.kind === 'file') {
+          const file = item.getAsFile();
+          if (file) {
+            let name = file.name;
+            if (!name || name === 'image.png' || name === 'blob') {
+              const ext = file.type.split('/')[1] || 'png';
+              name = `screenshot_${timeStr}_${imageIdx++}.${ext}`;
+            }
+            result.push(new File([file], name, { type: file.type }));
+          }
+        }
+      }
+    } else if (e.clipboardData.files && e.clipboardData.files.length > 0) {
+      for (const file of Array.from(e.clipboardData.files)) {
+        result.push(file);
+      }
+    }
+  } else if ('dataTransfer' in e && e.dataTransfer) {
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      for (const file of Array.from(files)) {
+        result.push(file);
+      }
+    }
+  }
+
+  return result;
+}
+
+export function isImageAttachment(a: { contentType: string; filename: string }): boolean {
+  return (
+    a.contentType.startsWith('image/') ||
+    /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(a.filename)
+  );
+}
+
+/**
+ * Renders an attachment preview (image thumbnail or file icon).
+ * Loads images using authenticated blob fetch to respect bearer token auth.
+ */
+export function AttachmentPreview({
+  ticketId,
+  attachment,
+  onOpenLightbox,
+}: {
+  ticketId: number;
+  attachment: Attachment;
+  onOpenLightbox?: (url: string, filename: string) => void;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+  const isImg = isImageAttachment(attachment);
+
+  useEffect(() => {
+    if (!isImg) return;
+    let active = true;
+    let createdUrl: string | null = null;
+    setLoading(true);
+    api
+      .fetchAttachmentBlob(ticketId, attachment.id)
+      .then((blob) => {
+        if (!active) return;
+        createdUrl = URL.createObjectURL(blob);
+        setUrl(createdUrl);
+      })
+      .catch(() => {
+        if (active) setError(true);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+      if (createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [ticketId, attachment.id, isImg]);
+
+  if (!isImg) {
+    return (
+      <div className="attach-file-icon" title={attachment.filename}>
+        📄
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="attach-thumb-loading">
+        <span className="spinner" />
+      </div>
+    );
+  }
+
+  if (error || !url) {
+    return <div className="attach-file-icon" title="图片加载失败">🖼️</div>;
+  }
+
+  return (
+    <img
+      src={url}
+      alt={attachment.filename}
+      className="attach-thumb-img"
+      onClick={() => onOpenLightbox?.(url, attachment.filename)}
+      title="点击查看大图"
+    />
+  );
+}
+
+/**
+ * Fullscreen lightbox modal for viewing image attachments.
+ */
+export function Lightbox({
+  src,
+  filename,
+  onClose,
+}: {
+  src: string;
+  filename: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  return createPortal(
+    <div className="lightbox-layer" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="lightbox-scrim" />
+      <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>
+        <div className="lightbox-bar">
+          <span className="lightbox-title">{filename}</span>
+          <button type="button" className="lightbox-close" onClick={onClose} aria-label="关闭">
+            ×
+          </button>
+        </div>
+        <div className="lightbox-img-wrap">
+          <img src={src} alt={filename} className="lightbox-img" />
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
