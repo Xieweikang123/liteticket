@@ -243,6 +243,68 @@ export const ticketTags = sqliteTable(
   (t) => [uniqueIndex('ticket_tags_unique').on(t.ticketId, t.tagId)],
 );
 
+/**
+ * Files attached to a ticket. Bytes live on disk under the attachments root
+ * (`{ticketId}/{storedName}`); this row is the metadata the API returns and
+ * the only thing that must stay consistent with the filesystem.
+ *
+ * `filename` is the original client name (for Content-Disposition). `storedName`
+ * is a random opaque key so a crafted upload cannot escape the ticket's
+ * directory. Deleting the ticket cascades the rows; the service also removes
+ * the on-disk directory so orphans do not accumulate.
+ */
+export const attachments = sqliteTable(
+  'attachments',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    ticketId: integer('ticket_id')
+      .notNull()
+      .references(() => tickets.id, { onDelete: 'cascade' }),
+    filename: text('filename').notNull(),
+    storedName: text('stored_name').notNull(),
+    contentType: text('content_type').notNull().default('application/octet-stream'),
+    size: integer('size').notNull(),
+    uploadedById: integer('uploaded_by_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: text('created_at')
+      .notNull()
+      .default(sqlNow()),
+  },
+  (t) => [
+    index('attachments_ticket_idx').on(t.ticketId),
+    uniqueIndex('attachments_stored_unique').on(t.ticketId, t.storedName),
+  ],
+);
+
+/**
+ * A one-line history of field changes on a ticket.
+ *
+ * Not a full audit log: only the fields an agent edits through `updateTicket`
+ * (status, priority, assignee, subject, tags). `fromValue` / `toValue` are
+ * display strings so the UI can render the timeline without joining users or
+ * tags again. `actorName` is denormalised for the same reason — a deleted user
+ * still shows as who made the change.
+ */
+export const ticketEvents = sqliteTable(
+  'ticket_events',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    ticketId: integer('ticket_id')
+      .notNull()
+      .references(() => tickets.id, { onDelete: 'cascade' }),
+    field: text('field').notNull(),
+    fromValue: text('from_value'),
+    toValue: text('to_value'),
+    actorId: integer('actor_id').references(() => users.id, { onDelete: 'set null' }),
+    actorName: text('actor_name'),
+    createdAt: text('created_at')
+      .notNull()
+      .default(sqlNow()),
+  },
+  (t) => [index('ticket_events_ticket_idx').on(t.ticketId)],
+);
+
 export type User = typeof users.$inferSelect;
 export type Ticket = typeof tickets.$inferSelect;
 export type NewTicket = typeof tickets.$inferInsert;
@@ -252,6 +314,8 @@ export type Setting = typeof settings.$inferSelect;
 export type Role = typeof roles.$inferSelect;
 export type Menu = typeof menus.$inferSelect;
 export type NewMenu = typeof menus.$inferInsert;
+export type Attachment = typeof attachments.$inferSelect;
+export type TicketEvent = typeof ticketEvents.$inferSelect;
 
 export const TICKET_STATUSES = ['open', 'pending', 'closed'] as const;
 export const TICKET_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;

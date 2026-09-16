@@ -238,6 +238,78 @@ let ticketId;
   check('comment count reflected', r.body?.commentCount === 2, `got ${r.body?.commentCount}`);
 }
 
+// ---- change timeline -----------------------------------------------------
+{
+  const r = await api(`/api/tickets/${ticketId}`, {
+    method: 'PATCH',
+    headers: jsonAuth,
+    // Created as high; bump to urgent so the priority event is not a no-op.
+    body: JSON.stringify({ priority: 'urgent', status: 'pending' }),
+  });
+  check('priority/status patch ok', r.status === 200 && r.body?.priority === 'urgent');
+}
+{
+  const r = await api(`/api/tickets/${ticketId}/events`, { headers: auth });
+  const fields = (r.body?.items ?? []).map((e) => e.field);
+  check('events list works', r.status === 200 && Array.isArray(r.body?.items));
+  check('events include status change', fields.includes('status'), JSON.stringify(fields));
+  check('events include priority change', fields.includes('priority'), JSON.stringify(fields));
+}
+{
+  const r = await api(`/api/tickets/${ticketId}?includeInternal=true`, { headers: auth });
+  check(
+    'detail embeds events',
+    Array.isArray(r.body?.events) && r.body.events.length >= 2,
+    `got ${r.body?.events?.length}`,
+  );
+}
+
+// ---- attachments ---------------------------------------------------------
+let attachmentId;
+{
+  const form = new FormData();
+  form.append('file', new Blob(['hello attachment'], { type: 'text/plain' }), 'note.txt');
+  const r = await api(`/api/tickets/${ticketId}/attachments`, {
+    method: 'POST',
+    headers: auth,
+    body: form,
+  });
+  attachmentId = r.body?.id;
+  check('attachment uploaded', r.status === 201 && typeof attachmentId === 'number', `status ${r.status}`);
+  check('attachment keeps filename', r.body?.filename === 'note.txt');
+  check('attachment reports size', r.body?.size === 16, `got ${r.body?.size}`);
+}
+{
+  const r = await api(`/api/tickets/${ticketId}/attachments`, { headers: auth });
+  check('attachments list works', r.status === 200 && r.body?.items?.length >= 1);
+}
+{
+  const r = await api(`/api/tickets/${ticketId}/attachments/${attachmentId}`, { headers: auth });
+  check(
+    'attachment downloads',
+    r.status === 200 && r.body === 'hello attachment',
+    `got ${JSON.stringify(r.body)}`,
+  );
+}
+{
+  const r = await api(`/api/tickets/${ticketId}?includeInternal=true`, { headers: auth });
+  check(
+    'detail embeds attachments',
+    Array.isArray(r.body?.attachments) && r.body.attachments.some((a) => a.id === attachmentId),
+  );
+}
+{
+  const r = await api(`/api/tickets/${ticketId}/attachments/${attachmentId}`, {
+    method: 'DELETE',
+    headers: auth,
+  });
+  check('attachment deleted', r.status === 204);
+}
+{
+  const r = await api(`/api/tickets/${ticketId}/attachments/${attachmentId}`, { headers: auth });
+  check('deleted attachment 404', r.status === 404);
+}
+
 // ---- users, tags, stats --------------------------------------------------
 let userId;
 {

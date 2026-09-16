@@ -23,6 +23,68 @@ export function PriorityPill({ priority }: { priority: string }) {
   return <span className={`pill ${priority}`}>{PRIORITY_LABEL[priority] ?? priority}</span>;
 }
 
+/**
+ * The status breakdown that sits under a list's page title. The counts are the
+ * whole point of the line, so each one gets its own cell and the number carries
+ * the weight — as one run-on sentence, `0` and `11` read the same and the
+ * backlog is invisible. A zero cell is dimmed rather than dropped, so the row
+ * does not reflow as tickets change state.
+ *
+ * With `onSelect` the same row is the status filter, which removes the usual
+ * "read the count here, change the filter over there" round trip. Counts come
+ * from the unfiltered stats, so the numbers hold still while a filter is on.
+ */
+export function StatusCounts({
+  counts,
+  active,
+  onSelect,
+}: {
+  counts: { open: number; pending: number; closed: number; total: number };
+  active?: string;
+  onSelect?: (status: string) => void;
+}) {
+  const tabs = [
+    { key: '', label: '全部', count: counts.total },
+    ...(['open', 'pending', 'closed'] as const).map((s) => ({
+      key: s,
+      label: STATUS_LABEL[s],
+      count: counts[s] ?? 0,
+    })),
+  ];
+  return (
+    <span className="stat-strip">
+      {tabs.map((t) => {
+        const isActive = (active ?? '') === t.key;
+        const body = (
+          <>
+            {t.key && <span className={`stat-dot ${t.key}`} aria-hidden="true" />}
+            {t.label} <b className="stat-num">{t.count}</b>
+          </>
+        );
+        const cls = `stat${isActive ? ' active' : ''}${t.count === 0 && t.key ? ' zero' : ''}`;
+        if (!onSelect) {
+          return (
+            <span key={t.key || 'all'} className={cls}>
+              {body}
+            </span>
+          );
+        }
+        return (
+          <button
+            key={t.key || 'all'}
+            type="button"
+            className={`${cls} stat-btn`}
+            aria-pressed={isActive}
+            onClick={() => onSelect(t.key)}
+          >
+            {body}
+          </button>
+        );
+      })}
+    </span>
+  );
+}
+
 /** Render an API timestamp (SQLite `datetime('now')`, UTC, no zone) as local time. */
 export function formatTime(value: string | null | undefined): string {
   if (!value) return '—';
@@ -208,11 +270,14 @@ export function Drawer({
   onClose,
   children,
   footer,
+  wide,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
+  /** For a view rather than a form — the ticket detail needs the room. */
+  wide?: boolean;
 }) {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -233,7 +298,7 @@ export function Drawer({
   return createPortal(
     <div className="drawer-layer">
       <div className="drawer-scrim" onClick={onClose} aria-hidden="true" />
-      <aside className="drawer" role="dialog" aria-modal="true" aria-label={title}>
+      <aside className={`drawer${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
         <header className="drawer-head">
           <h2>{title}</h2>
           <button className="drawer-x" onClick={onClose} aria-label="关闭">

@@ -76,6 +76,27 @@ export interface Comment {
   createdAt: string;
 }
 
+export interface Attachment {
+  id: number;
+  ticketId: number;
+  filename: string;
+  contentType: string;
+  size: number;
+  uploadedById: number | null;
+  createdAt: string;
+}
+
+export interface TicketEvent {
+  id: number;
+  ticketId: number;
+  field: string;
+  fromValue: string | null;
+  toValue: string | null;
+  actorId: number | null;
+  actorName: string | null;
+  createdAt: string;
+}
+
 export interface TokenRow {
   id: number;
   name: string;
@@ -122,18 +143,30 @@ interface RequestOptions {
   body?: unknown;
   /** Set for the login call, which must not send (or require) a token. */
   anonymous?: boolean;
+  /**
+   * Multipart upload: pass a FormData body and skip JSON Content-Type so the
+   * browser sets the boundary itself.
+   */
+  formData?: FormData;
 }
 
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token && !opts.anonymous) headers.Authorization = `Bearer ${token}`;
-  if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
+
+  let body: BodyInit | undefined;
+  if (opts.formData) {
+    body = opts.formData;
+  } else if (opts.body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    body = JSON.stringify(opts.body);
+  }
 
   const res = await fetch(`/api${path}`, {
     method: opts.method ?? 'GET',
     headers,
-    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+    body,
   });
 
   if (res.status === 401 && !opts.anonymous) {
@@ -205,6 +238,8 @@ export const api = {
     status?: string;
     q?: string;
     tag?: string;
+    sort?: 'updated' | 'priority' | 'id';
+    order?: 'asc' | 'desc';
     limit?: number;
     offset?: number;
   } = {}) => {
@@ -219,7 +254,7 @@ export const api = {
   },
 
   getTicket: (id: number, includeInternal = true) =>
-    request<Ticket & { comments: Comment[] }>(
+    request<Ticket & { comments: Comment[]; attachments: Attachment[]; events: TicketEvent[] }>(
       `/tickets/${id}${includeInternal ? '?includeInternal=true' : ''}`,
     ),
 
@@ -240,6 +275,44 @@ export const api = {
 
   addComment: (id: number, input: { body: string; isInternal?: boolean }) =>
     request<Comment>(`/tickets/${id}/comments`, { method: 'POST', body: input }),
+
+  uploadAttachment: (id: number, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request<Attachment>(`/tickets/${id}/attachments`, {
+      method: 'POST',
+      formData: form,
+    });
+  },
+
+  deleteAttachment: (ticketId: number, attachmentId: number) =>
+    request<void>(`/tickets/${ticketId}/attachments/${attachmentId}`, { method: 'DELETE' }),
+
+  /**
+   * Download via a plain fetch so the Authorization header is attached — a
+   * bare `<a href>` cannot send it, and the API rejects anonymous GETs.
+   */
+  downloadAttachment: async (ticketId: number, attachment: Attachment) => {
+    const token = getToken();
+    const res = await fetch(`/api/tickets/${ticketId}/attachments/${attachment.id}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (res.status === 401) {
+      setToken(null);
+      onUnauthorized?.();
+      throw new ApiError(401, '登录已失效，请重新登录');
+    }
+    if (!res.ok) throw new ApiError(res.status, `下载失败 (${res.status})`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = attachment.filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
 
   listUsers: () => request<{ items: (AuthUser & { createdAt: string })[] }>('/users'),
 

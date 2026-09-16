@@ -126,6 +126,31 @@ const BOOTSTRAP_SQL = [
      tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE
    )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS ticket_tags_unique ON ticket_tags (ticket_id, tag_id)`,
+
+  `CREATE TABLE IF NOT EXISTS attachments (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+     filename TEXT NOT NULL,
+     stored_name TEXT NOT NULL,
+     content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+     size INTEGER NOT NULL,
+     uploaded_by_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+   )`,
+  `CREATE INDEX IF NOT EXISTS attachments_ticket_idx ON attachments (ticket_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS attachments_stored_unique ON attachments (ticket_id, stored_name)`,
+
+  `CREATE TABLE IF NOT EXISTS ticket_events (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+     field TEXT NOT NULL,
+     from_value TEXT,
+     to_value TEXT,
+     actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+     actor_name TEXT,
+     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+   )`,
+  `CREATE INDEX IF NOT EXISTS ticket_events_ticket_idx ON ticket_events (ticket_id)`,
 ];
 
 /**

@@ -78,7 +78,8 @@ Everything here is done.
 
 ### Later
 
-- [ ] Attachments
+- [x] Attachments (local disk + API upload/download)
+- [x] Ticket field-change timeline (status / priority / assignee / subject / tags)
 - [ ] Full-text search (SQLite FTS5 is the obvious route)
 - [ ] Postgres support
 - [ ] Webhooks
@@ -157,6 +158,7 @@ hard refresh.
 | `WEB_PORT` | `5173` | Vite dev-server port (dev only) |
 | `HOST` | `127.0.0.1` | Bind address; set `0.0.0.0` to expose on the LAN |
 | `LITETICKET_DB` | `./data/liteticket.db` | SQLite file path |
+| `LITETICKET_ATTACHMENTS` | `<dbDir>/attachments` | On-disk root for ticket attachment files |
 | `LITETICKET_TOKEN` | generated | Seed a known bootstrap token instead of a generated one |
 | `LITETICKET_ADMIN_USERNAME` | `admin` | Seed admin's login username |
 | `LITETICKET_ADMIN_EMAIL` | `admin@localhost` | Seed admin's email (contact field) |
@@ -194,12 +196,17 @@ are yours to edit.
 | `GET` | `/api/auth/me` | Who the caller is; used to validate a stored token |
 | `POST` | `/api/auth/password` | Change **your own** password (`currentPassword`, `newPassword`); revokes your tokens |
 | `GET` | `/api/tickets` | `status`, `assigneeId`, `tag`, `q`, `limit`, `offset` |
-| `GET` | `/api/tickets/:id` | `?includeInternal=true` to include internal notes |
+| `GET` | `/api/tickets/:id` | `?includeInternal=true` to include internal notes; also embeds `attachments` and `events` |
 | `POST` | `/api/tickets` | `subject`, `requesterEmail` required |
-| `PATCH` | `/api/tickets/:id` | `status`, `priority`, `assigneeId`, `tags`, … |
+| `PATCH` | `/api/tickets/:id` | `status`, `priority`, `assigneeId`, `tags`, …; field changes are recorded as events |
 | `DELETE` | `/api/tickets/:id` | **admin** |
 | `GET` | `/api/tickets/:id/comments` | internal notes hidden unless requested |
 | `POST` | `/api/tickets/:id/comments` | `isInternal: true` for an internal note |
+| `GET` | `/api/tickets/:id/events` | field-change timeline (`status`, `priority`, `assignee`, `subject`, `tags`) |
+| `GET` | `/api/tickets/:id/attachments` | metadata only |
+| `POST` | `/api/tickets/:id/attachments` | multipart field `file`; max 10 MB, 50 per ticket |
+| `GET` | `/api/tickets/:id/attachments/:aid` | download bytes |
+| `DELETE` | `/api/tickets/:id/attachments/:aid` | `tickets.write` |
 | `GET` | `/api/users` · `/api/users/:id` | `users.read` |
 | `POST` | `/api/users` | `users.manage`; `username`, `email`, `name`, optional `role`, `password` |
 | `PATCH` | `/api/users/:id` | `users.manage`; `username`, `email`, `name`, `role`, `password` |

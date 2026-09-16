@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { Hono } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
+import { loadConfig } from './config.ts';
 import { initDb } from './db/index.ts';
 import { apiRoutes } from './routes/api.ts';
 
@@ -16,12 +17,19 @@ import { apiRoutes } from './routes/api.ts';
  * two cannot drift.
  */
 export async function createApp(dbFile?: string) {
-  const { db } = await initDb(dbFile);
+  const config = loadConfig();
+  const file = dbFile ?? config.dbFile;
+  const { db } = await initDb(file);
 
   const app = new Hono();
 
-  app.route('/api', apiRoutes(db));
+  // Attachments sit beside the database so a portable copy of `data/` keeps
+  // both. An explicit LITETICKET_ATTACHMENTS only applies to the default boot.
+  const attachmentsDir = dbFile
+    ? resolve(dirname(resolve(file)), 'attachments')
+    : config.attachmentsDir;
 
+  app.route('/api', apiRoutes(db, { attachmentsDir }));
   /**
    * Serve the built client. Everything that is not a real file falls back to
    * index.html so client-side routes (/tickets/42) survive a hard refresh

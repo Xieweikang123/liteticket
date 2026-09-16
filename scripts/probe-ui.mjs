@@ -337,17 +337,20 @@ try {
     (await agentPage.locator('.who-toggle').count()) === 1,
   );
 
-  // A non-admin has no users.manage, so the user menu is the only place they
-  // can change their password. Exercise it for real: open the menu, open the
-  // drawer, submit the form.
+  // A non-admin has no users.manage, so the account page is the only place they
+  // can change their password. Exercise it for real: open the menu, follow the
+  // 账号 link, expand the form, submit it.
   await agentPage.click('.who-toggle');
-  await agentPage.click('.who-menu button:has-text("修改密码")');
-  await agentPage.waitForSelector('form#change-password-form', { timeout: 8000 });
-  check('the user menu opens the password drawer', (await agentPage.locator('form#change-password-form').count()) > 0);
+  await agentPage.click('.who-menu a:has-text("账号")');
+  await agentPage.waitForSelector('button:has-text("修改密码")', { timeout: 8000 });
+  check('the account page opens with the form collapsed', (await agentPage.locator('#account-new-password').count()) === 0);
+  await agentPage.click('button:has-text("修改密码")');
+  await agentPage.waitForSelector('#account-new-password', { timeout: 8000 });
+  check('the account page reveals the password form', (await agentPage.locator('#account-new-password').count()) > 0);
   await agentPage.locator('.field:has-text("当前密码") input').fill(agentPassword);
   await agentPage.fill('#account-new-password', 'agentpass456');
   await agentPage.fill('#account-confirm-password', 'agentpass456');
-  await agentPage.locator('button[form="change-password-form"]').click();
+  await agentPage.locator('button[type="submit"]:has-text("修改密码")').click();
   await agentPage.waitForFunction(() => location.pathname.startsWith('/login'), { timeout: 8000 });
   check('password change logs the agent out', agentPage.url().includes('/login'), `url=${agentPage.url()}`);
 

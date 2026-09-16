@@ -19,7 +19,9 @@
   /* A small three-step elevation scale. Cards get the least, overlays the
      most; nothing in the app floats without one of these. */
   --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.05);
-  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04), 0 2px 8px -4px rgba(16, 24, 40, 0.1);
+  --shadow-sm:
+    0 1px 2px rgba(16, 24, 40, 0.05), 0 2px 6px -2px rgba(16, 24, 40, 0.08),
+    0 4px 14px -8px rgba(16, 24, 40, 0.1);
   --shadow-lg: 0 24px 48px -20px rgba(16, 24, 40, 0.3);
 
   /* The one focus treatment for fields, so every control rings identically. */
@@ -48,6 +50,18 @@ a {
 
 a:hover {
   text-decoration: underline;
+}
+
+/* A table is mostly rows, not links: rendering every title as brand blue turns
+   the column into a blue haze and buries the few cells that matter. The title
+   stays ink-dark at rest and only takes the brand colour when it is the target. */
+td a {
+  color: var(--text);
+  font-weight: 500;
+}
+
+td a:hover {
+  color: var(--primary);
 }
 
 ::selection {
@@ -319,6 +333,84 @@ a:hover {
   margin: 5px 0 0;
 }
 
+/* ---- status counts (page-head sub) ---- */
+
+.stat-strip {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 2px;
+}
+
+.stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  color: var(--muted);
+}
+
+/* A zero is still shown — the row keeps its shape as tickets change state —
+   but it steps back so the non-zero cells own the line. */
+.stat.zero {
+  opacity: 0.5;
+}
+
+.stat-num {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+}
+
+.stat-dot.open {
+  background: #1d4ed8;
+}
+
+.stat-dot.pending {
+  background: #d97706;
+}
+
+.stat-dot.closed {
+  background: #9ca3af;
+}
+
+/* The same row doubles as the status filter. A chip reads as clickable without
+   shouting: the hover tint hints, and the active chip is the only one tinted,
+   so "which filter is on" is answerable from the header rather than the URL. */
+.stat-btn {
+  font: inherit;
+  border: 1px solid transparent;
+  background: none;
+  box-shadow: none;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.stat-btn:hover:not(:disabled) {
+  background: #eef2f8;
+  border-color: transparent;
+}
+
+.stat-btn.active {
+  background: #fff;
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-xs);
+  color: var(--text);
+}
+
+.stat-btn.active .stat-num {
+  color: var(--primary);
+}
+
 .page-head-actions {
   display: flex;
   align-items: center;
@@ -343,6 +435,20 @@ a:hover {
   letter-spacing: -0.1px;
 }
 
+/* A heading with an action on the same line, e.g. a section that opens on
+   demand. The h2 keeps its rhythm; only its bottom margin moves to the row. */
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.card-head h2 {
+  margin: 0;
+}
+
 /* A card whose body is a table supplies its own padding, and scrolls sideways
    rather than squeezing the columns on a narrow screen. The overflow box also
    clips the table's corners to the card's radius. */
@@ -351,7 +457,23 @@ a:hover {
   overflow-x: auto;
 }
 
+/* When the card also carries a filter header, the overflow box moves down to
+   the table's own wrapper: on the card it would scroll the filters off-screen
+   along with a wide table. */
+.card:has(> .card-toolbar) {
+  padding: 0;
+  overflow: hidden;
+}
+
+.card-scroll {
+  overflow-x: auto;
+}
+
 .card > table {
+  min-width: 100%;
+}
+
+.card-scroll > table {
   min-width: 100%;
 }
 
@@ -524,11 +646,80 @@ button.link:hover:not(:disabled) {
   flex-wrap: wrap;
 }
 
-/* ---- filter toolbar ---- */
+/* ---- filter toolbar ----
+   Lives in the table card's own header rather than in a second card above it:
+   a card holding nothing but two controls cost a header, a body, and a gap, and
+   read as a box inside a box. The strip keeps the filter attached to the list
+   it filters. */
 
-.toolbar .search-input {
+.card-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  background: #fbfcfe;
+}
+
+.card-toolbar select {
+  padding: 7px 10px;
+}
+
+.search-field {
+  position: relative;
+  display: flex;
+  align-items: center;
   flex: 1 1 260px;
-  min-width: 200px;
+  /* Bounded: at full width the filter row reads as one huge field with the
+     status control stranded at the far edge. */
+  max-width: 420px;
+}
+
+.search-field svg {
+  position: absolute;
+  left: 10px;
+  width: 15px;
+  height: 15px;
+  color: var(--faint);
+  pointer-events: none;
+}
+
+.search-field .search-input {
+  width: 100%;
+  padding-left: 32px;
+  padding-right: 32px;
+}
+
+.search-clear {
+  position: absolute;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  box-shadow: none;
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.search-clear:hover:not(:disabled) {
+  background: #eef1f6;
+  border: none;
+  color: var(--text);
+}
+
+/* The browser's own clear button collides with the glyph and does not match the
+   app's controls; a search box that is typed into and cleared stays on the same
+   visual footing without it. */
+.search-input::-webkit-search-cancel-button {
+  appearance: none;
 }
 
 /* ---- table ---- */
@@ -576,6 +767,150 @@ tbody tr:last-child td {
   border-bottom: none;
 }
 
+/* ---- sortable columns ----
+ *
+ * The header cell is a button so the whole label is a hit target and the state
+ * is programmatic (`aria-sort`), not a glyph the user has to interpret. The
+ * resting arrow is faint and only shows meaning on hover, so an unsorted table
+ * does not read as a column of arrows.
+ */
+
+th.sortable {
+  padding: 0;
+}
+
+th.sortable:first-child {
+  padding-left: 0;
+}
+
+.sort-th {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}
+
+th.sortable:first-child .sort-th {
+  padding-left: 18px;
+}
+
+/* Mirrors `.time-cell` under it, so the label sits over the values it sorts. */
+th.sortable.right .sort-th {
+  justify-content: flex-end;
+}
+
+/* A sortable header that centers its values must center its label too, or the
+   arrow drifts away from the column it describes. */
+th.sortable.col-center .sort-th {
+  justify-content: center;
+}
+
+.sort-th:hover:not(:disabled) {
+  background: #f2f5f9;
+  border: none;
+  color: var(--text);
+}
+
+/* An active sort is indicated by the arrow and a darker label, not by the brand
+   colour: a blue header over a column of blue-broken dates read as a link that
+   happened to be a heading. */
+.sort-th.active {
+  color: var(--text);
+}
+
+.sort-arrow {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--faint);
+}
+
+.sort-th:hover .sort-arrow,
+.sort-th.active .sort-arrow {
+  color: currentColor;
+}
+
+/* Numeric columns read as a right-aligned stack, so the eye can compare down
+   the column instead of hunting for each value's start. */
+.time-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Short, fixed-shape values — a badge, an id, a pair of icon-sized actions —
+   line up down the middle; centering them stops a column of narrow chips from
+   looking ragged against a left edge. */
+.col-center {
+  text-align: center;
+}
+
+.num-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- requester cell ----
+ *
+ * Email first, name second: the email is the identity the API is keyed on and
+ * is always present, while the name is optional and used to sit alone on an
+ * otherwise empty line.
+ */
+
+.req {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.req-email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.req-name {
+  font-size: 12px;
+}
+
+/* The two entries to a ticket are equal citizens, so the buttons sit side by
+   side at one height rather than one reading as a link next to a boxed one. */
+.row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+/* A secondary action inside a table row loses its border and its shadow: a
+   column of boxed buttons competes with the row's own content, and at this size
+   the boxes read as noise. The label alone is enough affordance in the one
+   place the pointer already is. */
+button.ghost {
+  border-color: transparent;
+  background: none;
+  box-shadow: none;
+  color: var(--muted);
+}
+
+button.ghost:hover:not(:disabled) {
+  background: #eef1f6;
+  border-color: transparent;
+  color: var(--text);
+}
+
+button.sm {
+  padding: 3px 8px;
+  font-size: 12.5px;
+}
+
 /* ---- pills ---- */
 
 .pill {
@@ -603,14 +938,18 @@ tbody tr:last-child td {
   color: #4b5563;
 }
 
+/* Priority is a second axis, so it must not reuse the status palette: `normal`
+   and `open` were the same blue, and「待处理 + 普通」rendered as two identical
+   chips. Priority now stays on a neutral/slate ramp, and only the two pressing
+   levels take a colour. */
 .pill.low {
-  background: #eef1f4;
-  color: #4b5563;
+  background: #f2f4f7;
+  color: #667085;
 }
 
 .pill.normal {
-  background: #e0edff;
-  color: #1d4ed8;
+  background: #e3e8ef;
+  color: #414b5a;
 }
 
 .pill.high {
@@ -671,6 +1010,12 @@ tbody tr:last-child td {
   border-left: 1px solid var(--border);
   box-shadow: -12px 0 32px rgba(15, 23, 42, 0.14);
   animation: drawer-in 0.22s cubic-bezier(0.22, 0.68, 0.32, 1) both;
+}
+
+/* A detail sheet is read, not filled in, so it needs more width than a form —
+   and on a wide screen the list behind it should stay visible as context. */
+.drawer.wide {
+  width: min(720px, 100%);
 }
 
 @keyframes drawer-fade {
@@ -739,6 +1084,44 @@ tbody tr:last-child td {
 
 .drawer-body .field:last-child {
   margin-bottom: 0;
+}
+
+/* Inside a drawer the sections cannot be cards — a card in a sheet is a box in
+   a box — so they are separated by a rule instead. The extra space around the
+   first and last keeps the drawer's own padding from doubling. */
+.dsec {
+  padding-bottom: 18px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dsec:last-child {
+  padding-bottom: 0;
+  margin-bottom: 0;
+  border-bottom: none;
+}
+
+.dsec h2 {
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+}
+
+/* The subject's metadata line sits above it rather than beside, so the title
+   stays the first thing read at both the page's width and the drawer's. */
+.ticket-subject {
+  margin: 4px 0 10px;
+  font-size: 20px;
+  letter-spacing: -0.2px;
+}
+
+.meta-line {
+  margin: 0;
+}
+
+.back-row {
+  margin-bottom: 14px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -821,12 +1204,39 @@ tbody tr:last-child td {
 
 /* ---- pager ---- */
 
+/* A footer bar under the table: what is on screen, how many per page, and the
+   step controls. The count and the size picker sit on the left and the nav on
+   the right, so the two facts and the action are not read as one run of text. */
 .pager {
-  justify-content: center;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 4px 2px 0;
 }
 
-.pager button {
-  min-width: 78px;
+.pager-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pager-size select {
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.pager-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pager-nav button {
+  min-width: 70px;
 }
 
 .comment {
@@ -838,6 +1248,62 @@ tbody tr:last-child td {
 .comment.internal {
   border-left-color: #c084fc;
   background: #fdfaff;
+}
+
+.attach-list,
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.attach-row:last-child {
+  border-bottom: none;
+}
+
+button.linkish {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: var(--accent, #2563eb);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+button.linkish:hover {
+  opacity: 0.85;
+}
+
+.timeline-item {
+  padding: 8px 0 8px 14px;
+  border-left: 3px solid var(--border);
+  margin-bottom: 8px;
+}
+
+.timeline-main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-bottom: 2px;
+}
+
+.timeline-field {
+  font-weight: 600;
+  font-size: 13px;
 }
 
 .mono {
@@ -873,6 +1339,26 @@ pre {
 .facts dd {
   margin: 0;
   word-break: break-word;
+}
+
+/* ---- account layout ----
+ *
+ * Identity is a short list of facts; the password form is the work. Side by
+ * side they fill the page, where stacked cards at a fixed 520px left a dead
+ * half-screen beside them. The form column is the wider of the two and takes
+ * the slack, so the fields keep a sane measure as the viewport grows.
+ */
+
+.account-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(320px, 1.15fr);
+  gap: 16px;
+  align-items: start;
+}
+
+/* A card in this grid must not rely on its own bottom margin for spacing. */
+.account-grid .card {
+  margin-bottom: 0;
 }
 
 /* ---- login / auth --------------------------------------------------------
@@ -1255,6 +1741,11 @@ pre {
 
   .page-head {
     align-items: flex-start;
+  }
+
+  /* Two columns need more room than a phone has; stack the account cards. */
+  .account-grid {
+    grid-template-columns: 1fr;
   }
 }
 

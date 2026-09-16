@@ -139,6 +139,8 @@ const listQuerySchema = z.object({
   assigneeId: z.coerce.number().int().positive().optional(),
   tag: z.string().optional(),
   q: z.string().optional(),
+  sort: z.enum(['updated', 'priority', 'id']).optional(),
+  order: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });
@@ -173,8 +175,26 @@ function issues(err: z.ZodError) {
   return err.issues.map((i) => ({ path: i.path.join('.'), message: i.message }));
 }
 
-export function apiRoutes(db: Db) {
+/**
+ * Resolve a displayable actor for the change timeline. A user-bound token uses
+ * the owner's name; an unbound machine token falls back to the token's label.
+ */
+async function resolveActor(db: Db, principal: Principal): Promise<svc.Actor> {
+  if (principal.userId != null) {
+    const user = await svc.getUser(db, principal.userId);
+    return { id: principal.userId, name: user?.name ?? principal.name };
+  }
+  return { id: null, name: principal.name || 'API' };
+}
+
+export interface ApiOptions {
+  /** On-disk root for ticket attachment bytes. */
+  attachmentsDir: string;
+}
+
+export function apiRoutes(db: Db, opts: ApiOptions) {
   const api = new Hono<ApiEnv>();
+  const { attachmentsDir } = opts;
 
   // Health is intentionally public: monitoring and container liveness probes
   // must not need credentials.
@@ -363,8 +383,17 @@ export function apiRoutes(db: Db) {
 
     // Public API callers never see internal notes unless they explicitly ask.
     const includeInternal = c.req.query('includeInternal') === 'true';
-    const commentList = await svc.listComments(db, id, { includeInternal });
-    return c.json({ ...ticket, comments: commentList });
+    const [commentList, attachmentList, eventList] = await Promise.all([
+      svc.listComments(db, id, { includeInternal }),
+      svc.listAttachments(db, id),
+      svc.listTicketEvents(db, id),
+    ]);
+    return c.json({
+      ...ticket,
+      comments: commentList,
+      attachments: attachmentList,
+      events: eventList,
+    });
   });
 
   api.post('/tickets', can('tickets.write'), async (c) => {
@@ -399,7 +428,9 @@ export function apiRoutes(db: Db) {
       return c.json({ error: 'assignee not found' }, 422);
     }
 
-    const ticket = await svc.updateTicket(db, id, parsed.data);
+    const principal = c.get('auth');
+    const actor = await resolveActor(db, principal);
+    const ticket = await svc.updateTicket(db, id, parsed.data, actor);
     if (!ticket) return c.json({ error: 'ticket not found' }, 404);
     return c.json(ticket);
   });
@@ -408,7 +439,9 @@ export function apiRoutes(db: Db) {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
 
-    if (!(await svc.deleteTicket(db, id))) return c.json({ error: 'ticket not found' }, 404);
+    if (!(await svc.deleteTicket(db, id, attachmentsDir))) {
+      return c.json({ error: 'ticket not found' }, 404);
+    }
     return c.body(null, 204);
   });
 
@@ -447,6 +480,91 @@ export function apiRoutes(db: Db) {
     const comment = await svc.addComment(db, id, input);
     if (!comment) return c.json({ error: 'ticket not found' }, 404);
     return c.json(comment, 201);
+  });
+
+  api.get('/tickets/:id/events', can('tickets.read'), async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!(await svc.getTicket(db, id))) return c.json({ error: 'ticket not found' }, 404);
+    return c.json({ items: await svc.listTicketEvents(db, id) });
+  });
+
+  api.get('/tickets/:id/attachments', can('tickets.read'), async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+    if (!(await svc.getTicket(db, id))) return c.json({ error: 'ticket not found' }, 404);
+    return c.json({ items: await svc.listAttachments(db, id) });
+  });
+
+  api.post('/tickets/:id/attachments', can('tickets.write'), async (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id)) return c.json({ error: 'invalid id' }, 400);
+
+    const body = await c.req.parseBody({ all: true }).catch(() => null);
+    if (body == null) return c.json({ error: 'invalid multipart body' }, 400);
+
+    const file = body['file'];
+    if (!(file instanceof File)) {
+      return c.json({ error: 'file is required' }, 422);
+    }
+
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const principal = c.get('auth');
+    const result = await svc.addAttachment(db, id, attachmentsDir, {
+      filename: file.name || 'file',
+      contentType: file.type || undefined,
+      data: buf,
+      uploadedById: principal.userId,
+    });
+
+    if (!result.ok) {
+      if (result.error === 'ticket_not_found') return c.json({ error: 'ticket not found' }, 404);
+      if (result.error === 'too_large') {
+        return c.json(
+          { error: `file too large (max ${svc.MAX_ATTACHMENT_BYTES} bytes)` },
+          413,
+        );
+      }
+      if (result.error === 'too_many') {
+        return c.json(
+          { error: `too many attachments (max ${svc.MAX_ATTACHMENTS_PER_TICKET})` },
+          422,
+        );
+      }
+      return c.json({ error: 'empty file' }, 422);
+    }
+
+    return c.json(result.attachment, 201);
+  });
+
+  api.get('/tickets/:id/attachments/:aid', can('tickets.read'), async (c) => {
+    const id = Number(c.req.param('id'));
+    const aid = Number(c.req.param('aid'));
+    if (!Number.isInteger(id) || !Number.isInteger(aid)) return c.json({ error: 'invalid id' }, 400);
+
+    const file = await svc.readAttachmentFile(db, id, aid, attachmentsDir);
+    if (!file) return c.json({ error: 'attachment not found' }, 404);
+
+    // RFC 5987 filename* so non-ASCII original names survive the download.
+    const encoded = encodeURIComponent(file.meta.filename);
+    c.header('Content-Type', file.meta.contentType);
+    c.header(
+      'Content-Disposition',
+      `attachment; filename="download"; filename*=UTF-8''${encoded}`,
+    );
+    c.header('Content-Length', String(file.data.byteLength));
+    return c.body(Uint8Array.from(file.data));
+  });
+
+  api.delete('/tickets/:id/attachments/:aid', can('tickets.write'), async (c) => {
+    const id = Number(c.req.param('id'));
+    const aid = Number(c.req.param('aid'));
+    if (!Number.isInteger(id) || !Number.isInteger(aid)) return c.json({ error: 'invalid id' }, 400);
+
+    if (!(await svc.deleteAttachment(db, id, aid, attachmentsDir))) {
+      return c.json({ error: 'attachment not found' }, 404);
+    }
+    return c.body(null, 204);
   });
 
   // Listing users is needed to populate the assignee picker on a ticket, so it

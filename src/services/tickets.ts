@@ -1,9 +1,60 @@
+import { randomBytes } from 'node:crypto';
+import { mkdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { and, asc, desc, eq, inArray, like, or, sql } from 'drizzle-orm';
 import type { Db } from '../db/index.ts';
-import { comments, menus, roles, tags, ticketTags, tickets, tokens, users } from '../db/schema.ts';
-import type { Comment, Menu, Permission, Role, Ticket, User } from '../db/schema.ts';
+import {
+  attachments,
+  comments,
+  menus,
+  roles,
+  tags,
+  ticketEvents,
+  ticketTags,
+  tickets,
+  tokens,
+  users,
+} from '../db/schema.ts';
+import type {
+  Attachment,
+  Comment,
+  Menu,
+  Permission,
+  Role,
+  Ticket,
+  TicketEvent,
+  User,
+} from '../db/schema.ts';
 import { hashPassword } from '../auth.ts';
 import { nowIso } from '../time.ts';
+
+/** Who performed a mutating action — used for the ticket change timeline. */
+export interface Actor {
+  id: number | null;
+  name: string | null;
+}
+
+/** Cap a single upload so a runaway client cannot fill the disk. */
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+/** Soft cap per ticket; enough for screenshots and logs without unbounded growth. */
+export const MAX_ATTACHMENTS_PER_TICKET = 50;
+
+/**
+ * Metadata safe to return over the API. `storedName` is an opaque on-disk key
+ * and must never leave the server — downloads are addressed by attachment id.
+ */
+export type PublicAttachment = Omit<Attachment, 'storedName'>;
+
+const PUBLIC_ATTACHMENT_COLUMNS = {
+  id: attachments.id,
+  ticketId: attachments.ticketId,
+  filename: attachments.filename,
+  contentType: attachments.contentType,
+  size: attachments.size,
+  uploadedById: attachments.uploadedById,
+  createdAt: attachments.createdAt,
+};
 
 export interface TicketWithMeta extends Ticket {
   assigneeName: string | null;
@@ -11,12 +62,18 @@ export interface TicketWithMeta extends Ticket {
   commentCount: number;
 }
 
+export type TicketSort = 'updated' | 'priority' | 'id';
+
 export interface ListOptions {
   status?: 'open' | 'pending' | 'closed';
   assigneeId?: number;
   tag?: string;
   /** Free text over subject + body + requester. */
   q?: string;
+  /** Defaults to `updated`; the list page exposes these as sortable headers. */
+  sort?: TicketSort;
+  /** Defaults to `desc`. */
+  order?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
 }
@@ -95,11 +152,24 @@ export async function listTickets(
 
   const where = filters.length > 0 ? and(...filters) : undefined;
 
+  const dir = opts.order === 'asc' ? asc : desc;
+  // `priority` has no natural SQL order — the enum is alphabetical on disk, so
+  // a plain `desc` would sort `urgent` below `normal`. Rank it instead.
+  const priorityRank = sql`case ${tickets.priority}
+    when 'urgent' then 4 when 'high' then 3 when 'normal' then 2 else 1 end`;
+
+  const order =
+    opts.sort === 'priority'
+      ? [dir(priorityRank), desc(tickets.updatedAt), desc(tickets.id)]
+      : opts.sort === 'id'
+        ? [dir(tickets.id)]
+        : [dir(tickets.updatedAt), desc(tickets.id)];
+
   const rows = await db
     .select()
     .from(tickets)
     .where(where)
-    .orderBy(desc(tickets.updatedAt), desc(tickets.id))
+    .orderBy(...order)
     .limit(limit)
     .offset(offset);
 
@@ -167,38 +237,120 @@ export async function updateTicket(
   db: Db,
   id: number,
   patch: TicketPatch,
+  actor: Actor = { id: null, name: null },
 ): Promise<TicketWithMeta | null> {
   const existing = (await db.select().from(tickets).where(eq(tickets.id, id)).limit(1))[0];
   if (!existing) return null;
 
   const now = nowIso();
   const values: Record<string, unknown> = { updatedAt: now };
+  const pendingEvents: { field: string; fromValue: string | null; toValue: string | null }[] = [];
 
-  if (patch.subject !== undefined) values.subject = patch.subject;
+  if (patch.subject !== undefined && patch.subject !== existing.subject) {
+    values.subject = patch.subject;
+    pendingEvents.push({
+      field: 'subject',
+      fromValue: existing.subject,
+      toValue: patch.subject,
+    });
+  }
   if (patch.body !== undefined) values.body = patch.body;
-  if (patch.priority !== undefined) values.priority = patch.priority;
-  if (patch.assigneeId !== undefined) values.assigneeId = patch.assigneeId;
+  if (patch.priority !== undefined && patch.priority !== existing.priority) {
+    values.priority = patch.priority;
+    pendingEvents.push({
+      field: 'priority',
+      fromValue: existing.priority,
+      toValue: patch.priority,
+    });
+  }
+  if (patch.assigneeId !== undefined && patch.assigneeId !== existing.assigneeId) {
+    values.assigneeId = patch.assigneeId;
+    const fromName = await resolveUserLabel(db, existing.assigneeId);
+    const toName = await resolveUserLabel(db, patch.assigneeId);
+    pendingEvents.push({ field: 'assignee', fromValue: fromName, toValue: toName });
+  }
 
-  if (patch.status !== undefined) {
+  if (patch.status !== undefined && patch.status !== existing.status) {
     values.status = patch.status;
     // closedAt is derived, never client-supplied — otherwise it drifts out of
     // sync with status the moment a ticket is reopened.
     values.closedAt = patch.status === 'closed' ? (existing.closedAt ?? now) : null;
+    pendingEvents.push({
+      field: 'status',
+      fromValue: existing.status,
+      toValue: patch.status,
+    });
+  }
+
+  if (patch.tags !== undefined) {
+    const before = (await getTicket(db, id))!.tags;
+    const after = [...new Set(patch.tags.map((n) => n.trim()).filter(Boolean))].sort();
+    const beforeKey = before.slice().sort().join(', ');
+    const afterKey = after.join(', ');
+    if (beforeKey !== afterKey) {
+      pendingEvents.push({
+        field: 'tags',
+        fromValue: beforeKey || null,
+        toValue: afterKey || null,
+      });
+    }
   }
 
   await db.transaction(async (tx) => {
     await tx.update(tickets).set(values).where(eq(tickets.id, id));
     if (patch.tags !== undefined) await setTags(tx, id, patch.tags);
+    if (pendingEvents.length > 0) {
+      await tx.insert(ticketEvents).values(
+        pendingEvents.map((e) => ({
+          ticketId: id,
+          field: e.field,
+          fromValue: e.fromValue,
+          toValue: e.toValue,
+          actorId: actor.id,
+          actorName: actor.name,
+          createdAt: now,
+        })),
+      );
+    }
   });
 
   return getTicket(db, id);
 }
 
-export async function deleteTicket(db: Db, id: number): Promise<boolean> {
+/**
+ * Remove the ticket row (cascading comments / tags / attachments / events) and
+ * the on-disk attachment directory. The directory wipe is best-effort after the
+ * DB commit: a leftover empty folder is harmless; a deleted row with orphaned
+ * files would be worse, so the database goes first.
+ */
+export async function deleteTicket(
+  db: Db,
+  id: number,
+  attachmentsDir?: string,
+): Promise<boolean> {
   const existing = (await db.select().from(tickets).where(eq(tickets.id, id)).limit(1))[0];
   if (!existing) return false;
   await db.delete(tickets).where(eq(tickets.id, id));
+  if (attachmentsDir) {
+    await rm(ticketAttachDir(attachmentsDir, id), { recursive: true, force: true }).catch(() => {
+      /* directory may not exist */
+    });
+  }
   return true;
+}
+
+async function resolveUserLabel(db: Db, userId: number | null | undefined): Promise<string | null> {
+  if (userId == null) return null;
+  const user = await getUser(db, userId);
+  return user?.name ?? `#${userId}`;
+}
+
+export async function listTicketEvents(db: Db, ticketId: number): Promise<TicketEvent[]> {
+  return db
+    .select()
+    .from(ticketEvents)
+    .where(eq(ticketEvents.ticketId, ticketId))
+    .orderBy(desc(ticketEvents.createdAt), desc(ticketEvents.id));
 }
 
 /**
@@ -639,4 +791,138 @@ export async function stats(db: Db) {
     out.total = (out.total ?? 0) + n;
   }
   return out as { open: number; pending: number; closed: number; total: number };
+}
+
+// ---- attachments ----------------------------------------------------------
+
+function ticketAttachDir(root: string, ticketId: number): string {
+  return join(root, String(ticketId));
+}
+
+function attachmentPath(root: string, ticketId: number, storedName: string): string {
+  return join(ticketAttachDir(root, ticketId), storedName);
+}
+
+/**
+ * Keep a usable display name without letting path separators or control
+ * characters into Content-Disposition or the database.
+ */
+export function sanitizeFilename(name: string): string {
+  const base = name.replace(/^.*[/\\]/, '').replace(/[\x00-\x1f\x7f]/g, '').trim();
+  const cleaned = base.replace(/[<>:"|?*]/g, '_');
+  return (cleaned || 'file').slice(0, 200);
+}
+
+export async function listAttachments(db: Db, ticketId: number): Promise<PublicAttachment[]> {
+  return db
+    .select(PUBLIC_ATTACHMENT_COLUMNS)
+    .from(attachments)
+    .where(eq(attachments.ticketId, ticketId))
+    .orderBy(asc(attachments.createdAt), asc(attachments.id));
+}
+
+export interface AddAttachmentInput {
+  filename: string;
+  contentType?: string;
+  data: Uint8Array;
+  uploadedById?: number | null;
+}
+
+export type AddAttachmentResult =
+  | { ok: true; attachment: PublicAttachment }
+  | { ok: false; error: 'ticket_not_found' | 'too_large' | 'too_many' | 'empty' };
+
+/**
+ * Persist bytes under `{root}/{ticketId}/{storedName}` and insert the metadata
+ * row. The file is written before the insert so a failed write never leaves a
+ * dangling row; a failed insert leaves an orphan file that a later upload to
+ * the same ticket can coexist with (stored names are unique random keys).
+ */
+export async function addAttachment(
+  db: Db,
+  ticketId: number,
+  root: string,
+  input: AddAttachmentInput,
+): Promise<AddAttachmentResult> {
+  if (!(await getTicket(db, ticketId))) return { ok: false, error: 'ticket_not_found' };
+  if (input.data.byteLength === 0) return { ok: false, error: 'empty' };
+  if (input.data.byteLength > MAX_ATTACHMENT_BYTES) return { ok: false, error: 'too_large' };
+
+  const existing = await db
+    .select({ n: sql<number>`count(*)` })
+    .from(attachments)
+    .where(eq(attachments.ticketId, ticketId));
+  if (Number(existing[0]?.n ?? 0) >= MAX_ATTACHMENTS_PER_TICKET) {
+    return { ok: false, error: 'too_many' };
+  }
+
+  const filename = sanitizeFilename(input.filename);
+  const storedName = randomBytes(16).toString('hex');
+  const contentType =
+    (input.contentType && input.contentType.trim()) || 'application/octet-stream';
+  const dir = ticketAttachDir(root, ticketId);
+  await mkdir(dir, { recursive: true });
+  await writeFile(attachmentPath(root, ticketId, storedName), input.data);
+
+  const now = nowIso();
+  const created = (
+    await db
+      .insert(attachments)
+      .values({
+        ticketId,
+        filename,
+        storedName,
+        contentType: contentType.slice(0, 200),
+        size: input.data.byteLength,
+        uploadedById: input.uploadedById ?? null,
+        createdAt: now,
+      })
+      .returning(PUBLIC_ATTACHMENT_COLUMNS)
+  )[0]!;
+
+  await db.update(tickets).set({ updatedAt: now }).where(eq(tickets.id, ticketId));
+  return { ok: true, attachment: created };
+}
+
+export async function getAttachment(
+  db: Db,
+  ticketId: number,
+  attachmentId: number,
+): Promise<Attachment | null> {
+  const rows = await db
+    .select()
+    .from(attachments)
+    .where(and(eq(attachments.id, attachmentId), eq(attachments.ticketId, ticketId)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function readAttachmentFile(
+  db: Db,
+  ticketId: number,
+  attachmentId: number,
+  root: string,
+): Promise<{ meta: PublicAttachment; data: Buffer } | null> {
+  const row = await getAttachment(db, ticketId, attachmentId);
+  if (!row) return null;
+  const data = await readFile(attachmentPath(root, ticketId, row.storedName));
+  const { storedName: _omit, ...meta } = row;
+  return { meta, data };
+}
+
+export async function deleteAttachment(
+  db: Db,
+  ticketId: number,
+  attachmentId: number,
+  root: string,
+): Promise<boolean> {
+  const row = await getAttachment(db, ticketId, attachmentId);
+  if (!row) return false;
+
+  await db.delete(attachments).where(eq(attachments.id, attachmentId));
+  await unlink(attachmentPath(root, ticketId, row.storedName)).catch(() => {
+    /* file may already be gone */
+  });
+  await db.update(tickets).set({ updatedAt: nowIso() }).where(eq(tickets.id, ticketId));
+  return true;
 }

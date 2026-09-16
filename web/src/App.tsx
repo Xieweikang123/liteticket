@@ -9,7 +9,7 @@ import { UsersPage } from './pages/Users.tsx';
 import { RolesPage } from './pages/Roles.tsx';
 import { MenusPage } from './pages/Menus.tsx';
 import { TokensPage } from './pages/Tokens.tsx';
-import { AccountPage, ChangePasswordDrawer } from './pages/Account.tsx';
+import { AccountPage } from './pages/Account.tsx';
 
 /**
  * A nav tab. React Router already appends `active` to the className it is
@@ -34,13 +34,16 @@ function Tab({ to, end, children }: { to: string; end?: boolean; children: React
  *
  * It closes on outside click and on Escape because it is anchored to a
  * toggle rather than to a scrim: a dropdown that only closes by clicking its
- * own button strands anyone who opened it by mistake. The 修改密码 entry opens a
- * drawer instead of a route, so the page underneath is never left behind.
+ * own button strands anyone who opened it by mistake.
+ *
+ * The menu holds two rows: 账号 opens the account page (identity and the
+ * password form), 退出 ends the session. 修改密码 used to be a third row that
+ * opened a drawer, leaving the same action reachable from this menu and from a
+ * button on the very page the first row went to.
  */
 function UserMenu() {
   const { user, logout } = useAuth();
   const [open, setOpen] = useState(false);
-  const [changing, setChanging] = useState(false);
   const wrap = useRef<HTMLSpanElement>(null);
   // The badge names the built-in `admin` role, not the capability: a custom
   // role holding `roles.manage` is not this one, and labelling it 管理员 would
@@ -86,23 +89,13 @@ function UserMenu() {
             <span className="who-menu-user mono">{user.username}</span>
           </div>
           <Link to="/account" role="menuitem" onClick={() => setOpen(false)}>
-            账号设置
+            账号
           </Link>
-          <button
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              setChanging(true);
-            }}
-          >
-            修改密码
-          </button>
           <button role="menuitem" onClick={() => void logout()}>
             退出
           </button>
         </div>
       )}
-      {changing && <ChangePasswordDrawer onClose={() => setChanging(false)} />}
     </span>
   );
 }
