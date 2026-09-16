@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.ts';
 import type { TokenRow } from '../api.ts';
-import { Empty, ErrorBox, ConfirmButton, Field, Loading, formatTime } from '../ui.tsx';
+import { Empty, ErrorBox, ConfirmButton, Field, Loading, PageHead, formatTime } from '../ui.tsx';
 
 /**
  * Self-service API tokens (「令牌」 in the Chinese UI, to match the wording the
@@ -65,6 +65,11 @@ export function TokensPage() {
 
   return (
     <>
+      <PageHead
+        title="我的令牌"
+        sub="签发给脚本或 CI 的长期凭证，随时可以吊销"
+      />
+
       {fresh && (
         <div className="card">
           <h2>新令牌（只显示这一次）</h2>
@@ -107,7 +112,7 @@ export function TokensPage() {
         </div>
       </form>
 
-      <div className="card" style={{ padding: 0 }}>
+      <div className="card">
         {loading ? (
           <Loading />
         ) : items.length === 0 ? (

@@ -1,13 +1,31 @@
 :root {
-  --bg: #f6f7f9;
+  --bg: #f4f6fa;
   --card: #ffffff;
-  --border: #e3e6ea;
-  --text: #1f2329;
+  --border: #e5e8ee;
+  --border-strong: #d3d8e2;
+  --text: #1c2027;
   --muted: #6b7280;
+  --faint: #98a0ac;
+
   --primary: #2563eb;
   --primary-dark: #1d4ed8;
+
   --danger: #dc2626;
-  --radius: 8px;
+  --danger-dark: #b91c1c;
+
+  --radius-sm: 6px;
+  --radius: 10px;
+
+  /* A small three-step elevation scale. Cards get the least, overlays the
+     most; nothing in the app floats without one of these. */
+  --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04), 0 2px 8px -4px rgba(16, 24, 40, 0.1);
+  --shadow-lg: 0 24px 48px -20px rgba(16, 24, 40, 0.3);
+
+  /* The one focus treatment for fields, so every control rings identically. */
+  --ring: 0 0 0 3px rgba(37, 99, 235, 0.16);
+
+  --topbar-h: 58px;
 }
 
 * {
@@ -19,6 +37,8 @@ body {
   background: var(--bg);
   color: var(--text);
   font: 14px/1.55 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 a {
@@ -30,22 +50,39 @@ a:hover {
   text-decoration: underline;
 }
 
+::selection {
+  background: rgba(37, 99, 235, 0.16);
+}
+
+/* The keyboard ring is global; pointer users never see it because
+   :focus-visible only matches keyboard focus. */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 /* ---- top bar ----
  *
  * Brand and nav are separated by a rule rather than by whitespace alone: at a
  * 20px gap the wordmark read as another nav item. The bar is full-height flex
  * and the tabs stretch to it, so their underline can sit on the bar's own
  * bottom border instead of floating under the text like a strikethrough.
+ *
+ * It is translucent with a blur so content scrolling underneath stays faintly
+ * visible — the sticky bar reads as a layer, not a lid.
  */
 
 .topbar {
-  background: var(--card);
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: saturate(160%) blur(8px);
+  -webkit-backdrop-filter: saturate(160%) blur(8px);
   border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
   display: flex;
   align-items: stretch;
-  gap: 0 12px;
+  gap: 0 10px;
   padding: 0 20px;
-  height: 56px;
+  height: var(--topbar-h);
   position: sticky;
   top: 0;
   z-index: 20;
@@ -54,13 +91,29 @@ a:hover {
 .topbar .brand {
   display: flex;
   align-items: center;
+  gap: 9px;
   font-weight: 700;
   font-size: 15px;
   letter-spacing: -0.1px;
   color: var(--text);
-  padding-right: 18px;
-  margin-right: 6px;
+  padding-right: 16px;
+  margin-right: 4px;
   border-right: 1px solid var(--border);
+}
+
+/* The same mark as the login screen's, so the two surfaces share an identity. */
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: linear-gradient(150deg, #5b8cff, #3358d4);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  box-shadow: 0 3px 8px rgba(37, 99, 235, 0.3);
 }
 
 .topbar nav {
@@ -80,7 +133,7 @@ a:hover {
 .topbar .tab {
   display: flex;
   align-items: center;
-  padding: 0 14px;
+  padding: 0 13px;
   color: var(--muted);
   font-weight: 500;
   white-space: nowrap;
@@ -108,6 +161,7 @@ a:hover {
 }
 
 .topbar .who {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -115,6 +169,29 @@ a:hover {
   font-size: 13px;
   color: var(--muted);
   white-space: nowrap;
+}
+
+/* The bar is full-height flex, so a bare text button would sit flush against
+   the top and bottom edges and read as a tab. A pill inset inside the bar
+   keeps the account visually separate from the nav it is not part of. */
+.topbar .who-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  border-color: transparent;
+  background: none;
+  box-shadow: none;
+}
+
+.topbar .who-toggle:hover:not(:disabled) {
+  background: #f0f1f4;
+  border-color: transparent;
+}
+
+.topbar .who-toggle[aria-expanded='true'] {
+  background: #f0f1f4;
+  border-color: var(--border);
 }
 
 .topbar .who-name {
@@ -132,9 +209,79 @@ a:hover {
   color: #1d4ed8;
 }
 
+.topbar .who-caret {
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* Anchored to the toggle, right-aligned to the bar's own padding so it opens
+   under the name rather than off the edge of the viewport. */
+.topbar .who-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  min-width: 210px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  animation: menu-in 0.14s ease both;
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.topbar .who-menu-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px 9px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar .who-menu-name {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.topbar .who-menu-user {
+  color: var(--muted);
+}
+
+/* Menu rows are text buttons, not the app's boxed buttons: a column of outlined
+   buttons reads as a toolbar, which is the wrong affordance for a list. */
+.topbar .who-menu a,
+.topbar .who-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 8px;
+  border: none;
+  background: none;
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+}
+
+.topbar .who-menu a:hover,
+.topbar .who-menu button:hover:not(:disabled) {
+  background: #f0f1f4;
+  text-decoration: none;
+}
+
 .wrap {
-  max-width: 1100px;
-  margin: 20px auto;
+  max-width: 1140px;
+  margin: 22px auto 40px;
   padding: 0 20px;
 }
 
@@ -145,32 +292,81 @@ a:hover {
   padding: 0;
 }
 
+/* ---- page heading ----
+ *
+ * The tab already says where you are, but a tab is small and the first card
+ * gives no context. A heading and a count line sit above the work and give the
+ * page a top, so the cards below stop reading as the whole thing.
+ */
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 0 0 16px;
+}
+
+.page-head h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+
+.page-head-sub {
+  margin: 5px 0 0;
+}
+
+.page-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* ---- card ---- */
 
 .card {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px;
+  box-shadow: var(--shadow-sm);
+  padding: 18px;
   margin-bottom: 16px;
 }
 
 .card h2 {
-  margin: 0 0 12px;
-  font-size: 16px;
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+}
+
+/* A card whose body is a table supplies its own padding, and scrolls sideways
+   rather than squeezing the columns on a narrow screen. The overflow box also
+   clips the table's corners to the card's radius. */
+.card:has(> table) {
+  padding: 0;
+  overflow-x: auto;
+}
+
+.card > table {
+  min-width: 100%;
 }
 
 /* ---- forms ---- */
 
 .field {
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .field label {
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12.5px;
+  font-weight: 500;
 }
 
 input,
@@ -178,62 +374,106 @@ select,
 textarea {
   font: inherit;
   color: inherit;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
   background: #fff;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--faint);
+}
+
+input:hover:not(:focus),
+select:hover:not(:focus),
+textarea:hover:not(:focus) {
+  border-color: #c3cad6;
 }
 
 input:focus,
 select:focus,
 textarea:focus {
-  outline: 2px solid var(--primary);
-  outline-offset: -1px;
+  outline: none;
   border-color: var(--primary);
+  box-shadow: var(--ring);
 }
 
 textarea {
   width: 100%;
-  min-height: 80px;
+  min-height: 84px;
   resize: vertical;
+  line-height: 1.6;
+}
+
+input[type='checkbox'] {
+  accent-color: var(--primary);
+  padding: 0;
 }
 
 button {
   font: inherit;
+  font-weight: 500;
   cursor: pointer;
-  padding: 6px 14px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  padding: 7px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
   background: #fff;
   color: var(--text);
+  box-shadow: var(--shadow-xs);
+  /* A button label is a single action; wrapping it in a narrow 操作 column
+     split「编辑」over two lines. */
+  white-space: nowrap;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 button:hover:not(:disabled) {
-  background: #f0f1f3;
+  background: #f6f7f9;
+  border-color: #c3cad6;
+}
+
+button:active:not(:disabled) {
+  background: #eef0f3;
 }
 
 button:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 button.primary {
   background: var(--primary);
   border-color: var(--primary);
   color: #fff;
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.3);
 }
 
 button.primary:hover:not(:disabled) {
   background: var(--primary-dark);
+  border-color: var(--primary-dark);
+}
+
+button.primary:active:not(:disabled) {
+  background: #1a45c4;
 }
 
 button.danger {
   color: var(--danger);
-  border-color: #f3c4c4;
+  border-color: #f0c8c8;
+  background: #fff;
 }
 
 button.danger:hover:not(:disabled) {
   background: #fef2f2;
+  border-color: #e9b4b4;
 }
 
 /* The armed state of a destructive action. Solid red, unlike the outlined
@@ -245,7 +485,8 @@ button.danger.solid {
 }
 
 button.danger.solid:hover:not(:disabled) {
-  background: #b91c1c;
+  background: var(--danger-dark);
+  border-color: var(--danger-dark);
 }
 
 /* Asks in the row it belongs to. Kept on one line: the question is longer than
@@ -268,6 +509,12 @@ button.link {
   background: none;
   color: var(--primary);
   padding: 0;
+  box-shadow: none;
+}
+
+button.link:hover:not(:disabled) {
+  background: none;
+  text-decoration: underline;
 }
 
 .row {
@@ -275,6 +522,13 @@ button.link {
   gap: 10px;
   align-items: center;
   flex-wrap: wrap;
+}
+
+/* ---- filter toolbar ---- */
+
+.toolbar .search-input {
+  flex: 1 1 260px;
+  min-width: 200px;
 }
 
 /* ---- table ---- */
@@ -287,28 +541,50 @@ table {
 th,
 td {
   text-align: left;
-  padding: 9px 10px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border);
-  vertical-align: top;
+  vertical-align: middle;
 }
 
 th {
+  background: #fafbfd;
   color: var(--muted);
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+th:first-child,
+td:first-child {
+  padding-left: 18px;
+}
+
+th:last-child,
+td:last-child {
+  padding-right: 18px;
+}
+
+tbody tr {
+  transition: background 0.12s ease;
 }
 
 tbody tr:hover {
-  background: #fafbfc;
+  background: #f8fafc;
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
 }
 
 /* ---- pills ---- */
 
 .pill {
   display: inline-block;
-  padding: 1px 8px;
+  padding: 2px 9px;
   border-radius: 999px;
   font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
   white-space: nowrap;
 }
 
@@ -354,10 +630,11 @@ tbody tr:hover {
 
 .tag {
   display: inline-block;
-  background: #eef1f4;
+  background: #f1f3f7;
   color: #4b5563;
-  border-radius: 4px;
-  padding: 0 6px;
+  border: 1px solid #e6e9ef;
+  border-radius: 5px;
+  padding: 1px 7px;
   font-size: 12px;
   margin-right: 4px;
 }
@@ -413,7 +690,7 @@ tbody tr:hover {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 18px;
+  padding: 15px 18px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -429,15 +706,17 @@ tbody tr:hover {
   height: 30px;
   padding: 0;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: none;
+  box-shadow: none;
   color: var(--muted);
   font-size: 20px;
   line-height: 1;
 }
 
 .drawer-x:hover:not(:disabled) {
-  background: #f0f1f3;
+  background: #f0f1f4;
+  border: none;
   color: var(--text);
 }
 
@@ -455,7 +734,7 @@ tbody tr:hover {
   gap: 10px;
   padding: 14px 18px;
   border-top: 1px solid var(--border);
-  background: #fcfcfd;
+  background: #fbfcfe;
 }
 
 .drawer-body .field:last-child {
@@ -483,8 +762,8 @@ tbody tr:hover {
   color: var(--danger);
   background: #fef2f2;
   border: 1px solid #f3c4c4;
-  border-radius: 6px;
-  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
   margin-bottom: 12px;
 }
 
@@ -492,21 +771,68 @@ tbody tr:hover {
   color: #15803d;
   background: #f0fdf4;
   border: 1px solid #bbf7d0;
-  border-radius: 6px;
-  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
   margin-bottom: 12px;
 }
 
-.center {
-  text-align: center;
-  padding: 40px 0;
+/* The shared resting state for a page or a card with nothing in it. */
+.center,
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 48px 24px;
   color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.empty svg {
+  color: var(--faint);
+}
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 48px 24px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- pager ---- */
+
+.pager {
+  justify-content: center;
+}
+
+.pager button {
+  min-width: 78px;
 }
 
 .comment {
   border-left: 3px solid var(--border);
-  padding: 8px 0 8px 12px;
-  margin-bottom: 12px;
+  padding: 10px 0 10px 14px;
+  margin-bottom: 14px;
 }
 
 .comment.internal {
@@ -518,6 +844,35 @@ tbody tr:hover {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
   word-break: break-all;
+}
+
+pre {
+  margin: 0;
+  font: inherit;
+}
+
+/* ---- read-only attribute list ----
+ *
+ * For pages that show facts about a record rather than a form to edit it.
+ * A definition list, not a table: there is no header row and no second column
+ * of data, and the two are announced differently.
+ */
+
+.facts {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 10px 14px;
+  margin: 0;
+  font-size: 14px;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  word-break: break-word;
 }
 
 /* ---- login / auth --------------------------------------------------------
@@ -741,12 +1096,15 @@ tbody tr:hover {
   padding: 10px 12px;
   border-radius: 8px;
   font-size: 14px;
+  box-shadow: none;
 }
 
-/* The shared `input:focus` rule paints an outline; inside the wrapper the
-   focus ring belongs to the border, or it double-draws. */
+/* The shared focus rules paint a border and a ring; inside the wrapper the
+   focus ring belongs to the wrapper, or it double-draws. */
 .auth-control input:focus {
   outline: none;
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .auth-control input::placeholder {
@@ -761,14 +1119,16 @@ tbody tr:hover {
   margin-right: 3px;
   padding: 0;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: none;
+  box-shadow: none;
   color: var(--muted);
   transition: color 0.15s ease;
 }
 
 .auth-reveal:hover:not(:disabled) {
   background: none;
+  border: none;
   color: var(--text);
 }
 
@@ -843,13 +1203,70 @@ tbody tr:hover {
   }
 }
 
+/* ---- narrow screens ----
+ *
+ * The layout is a table-heavy admin surface, so the priority on a small screen
+ * is to keep the rows readable and let them scroll rather than reflow. Only the
+ * chrome is tightened and the least important labels dropped.
+ */
+@media (max-width: 720px) {
+  .wrap {
+    margin: 16px auto 32px;
+    padding: 0 12px;
+  }
+
+  .topbar {
+    padding: 0 12px;
+    gap: 0 6px;
+  }
+
+  .topbar .brand {
+    padding-right: 12px;
+    margin-right: 2px;
+  }
+
+  .topbar .who {
+    padding-left: 8px;
+  }
+
+  .topbar .who-role {
+    display: none;
+  }
+
+  .card {
+    padding: 14px;
+    border-radius: var(--radius);
+  }
+
+  th,
+  td {
+    padding: 9px 10px;
+  }
+
+  th:first-child,
+  td:first-child {
+    padding-left: 14px;
+  }
+
+  th:last-child,
+  td:last-child {
+    padding-right: 14px;
+  }
+
+  .page-head {
+    align-items: flex-start;
+  }
+}
+
 /* Someone who asked the OS to stop animating should get no entrance, no spin. */
 @media (prefers-reduced-motion: reduce) {
-  .auth-card {
+  .auth-card,
+  .topbar .who-menu {
     animation: none;
   }
 
-  .auth-spinner {
+  .auth-spinner,
+  .spinner {
     animation-duration: 2s;
   }
 }

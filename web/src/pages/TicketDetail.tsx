@@ -96,7 +96,7 @@ export function TicketDetailPage() {
   return (
     <>
       <div className="card">
-        <div className="row" style={{ marginBottom: 10 }}>
+        <div className="row" style={{ marginBottom: 12 }}>
           <Link to="/" className="small">
             ← 返回列表
           </Link>
@@ -105,8 +105,8 @@ export function TicketDetailPage() {
             {formatTime(ticket.updatedAt)}
           </span>
         </div>
-        <h2 style={{ marginTop: 0 }}>{ticket.subject}</h2>
-        <div className="row" style={{ marginBottom: 12 }}>
+        <h2 style={{ marginTop: 0, fontSize: 20 }}>{ticket.subject}</h2>
+        <div className="row" style={{ marginBottom: 14, gap: 8 }}>
           <StatusPill status={ticket.status} />
           <PriorityPill priority={ticket.priority} />
           {(ticket.tags ?? []).map((t) => (
@@ -115,8 +115,10 @@ export function TicketDetailPage() {
             </span>
           ))}
         </div>
-        {ticket.body && <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{ticket.body}</pre>}
-        <div className="muted small" style={{ marginTop: 12 }}>
+        {ticket.body && (
+          <pre style={{ whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>{ticket.body}</pre>
+        )}
+        <div className="muted small" style={{ marginTop: 14 }}>
           请求人：{ticket.requesterName ?? '—'} &lt;{ticket.requesterEmail}&gt;
           {ticket.closedAt && ` · 关闭于 ${formatTime(ticket.closedAt)}`}
         </div>

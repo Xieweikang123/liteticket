@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.ts';
 import type { AuthUser, RoleRow } from '../api.ts';
 import { useAuth, can } from '../auth.tsx';
-import { Empty, ErrorBox, ConfirmButton, Drawer, Field, Loading, formatTime } from '../ui.tsx';
+import { Empty, ErrorBox, ConfirmButton, Drawer, Field, Loading, PageHead, formatTime } from '../ui.tsx';
 
 type Row = AuthUser & { createdAt: string };
 
@@ -12,6 +12,7 @@ export function UsersPage() {
   const [roles, setRoles] = useState<RoleRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
+  const [creating, setCreating] = useState(false);
   const manage = can(permissions, 'users.manage');
 
   const load = useCallback(async () => {
@@ -40,7 +41,25 @@ export function UsersPage() {
 
   return (
     <>
-      {manage && <NewUserCard roles={roles} onCreated={load} />}
+      <PageHead title="用户" sub={`共 ${items.length} 个用户`}>
+        {manage && (
+          <button className="primary" onClick={() => setCreating(true)}>
+            新建用户
+          </button>
+        )}
+      </PageHead>
+
+      {creating && (
+        <NewUserDrawer
+          roles={roles}
+          onClose={() => setCreating(false)}
+          onCreated={() => {
+            setCreating(false);
+            void load();
+          }}
+        />
+      )}
+
       <ErrorBox error={error} />
       <div className="card" style={{ padding: 0 }}>
         {loading ? (
@@ -260,8 +279,15 @@ function defaultRole(roles: RoleRow[]): string {
   return roles.find((r) => r.name === 'agent')?.name ?? roles[0]?.name ?? 'agent';
 }
 
-function NewUserCard({ roles, onCreated }: { roles: RoleRow[]; onCreated: () => void }) {
-  const [open, setOpen] = useState(false);
+function NewUserDrawer({
+  roles,
+  onClose,
+  onCreated,
+}: {
+  roles: RoleRow[];
+  onClose: () => void;
+  onCreated: () => void;
+}) {
   const [username, setUsername] = useState('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -276,12 +302,6 @@ function NewUserCard({ roles, onCreated }: { roles: RoleRow[]; onCreated: () => 
     setError(null);
     try {
       await api.createUser({ username, name, email, password: password || undefined, role });
-      setUsername('');
-      setName('');
-      setEmail('');
-      setPassword('');
-      setRole(defaultRole(roles));
-      setOpen(false);
       onCreated();
     } catch (err) {
       setError(err);
@@ -290,26 +310,16 @@ function NewUserCard({ roles, onCreated }: { roles: RoleRow[]; onCreated: () => 
     }
   }
 
-  if (!open) {
-    return (
-      <div className="card">
-        <button className="primary" onClick={() => setOpen(true)}>
-          新建用户
-        </button>
-      </div>
-    );
-  }
-
   return (
     <Drawer
       title="新建用户"
-      onClose={() => setOpen(false)}
+      onClose={onClose}
       footer={
         <>
           <button className="primary" type="submit" form="new-user-form" disabled={busy}>
             {busy ? '创建中…' : '创建'}
           </button>
-          <button type="button" onClick={() => setOpen(false)}>
+          <button type="button" onClick={onClose}>
             取消
           </button>
         </>
