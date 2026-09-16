@@ -15,7 +15,8 @@ export type Permission =
   | 'tickets.delete'
   | 'users.read'
   | 'users.manage'
-  | 'roles.manage';
+  | 'roles.manage'
+  | 'menus.manage';
 
 export interface AuthUser {
   id: number;
@@ -32,6 +33,19 @@ export interface RoleRow {
   label: string;
   description: string | null;
   permissions: Permission[];
+  isSystem: boolean;
+  createdAt: string;
+}
+
+export interface MenuRow {
+  id: number;
+  name: string;
+  label: string;
+  path: string;
+  /** null is visible to every signed-in user. */
+  permission: Permission | null;
+  sort: number;
+  visible: boolean;
   isSystem: boolean;
   createdAt: string;
 }
@@ -252,6 +266,29 @@ export const api = {
     request<RoleRow>(`/roles/${id}`, { method: 'PATCH', body: patch }),
 
   deleteRole: (id: number) => request<void>(`/roles/${id}`, { method: 'DELETE' }),
+
+  /**
+   * The nav tabs this session may see. Already filtered by permission and
+   * visibility on the server, so the client renders the list as given.
+   */
+  listMenus: () => request<{ items: MenuRow[] }>('/menus'),
+
+  /** Every tab, including hidden ones — the management view. */
+  listAllMenus: () => request<{ items: MenuRow[] }>('/menus?all=true'),
+
+  createMenu: (input: {
+    name: string;
+    label: string;
+    path: string;
+    permission?: Permission | null;
+    sort?: number;
+    visible?: boolean;
+  }) => request<MenuRow>('/menus', { method: 'POST', body: input }),
+
+  updateMenu: (id: number, patch: Record<string, unknown>) =>
+    request<MenuRow>(`/menus/${id}`, { method: 'PATCH', body: patch }),
+
+  deleteMenu: (id: number) => request<void>(`/menus/${id}`, { method: 'DELETE' }),
 
   listTokens: () => request<{ items: TokenRow[] }>('/tokens'),
 

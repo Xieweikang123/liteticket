@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
 
 export const STATUS_LABEL: Record<string, string> = {
@@ -54,11 +55,56 @@ export function ErrorBox({ error }: { error: unknown }) {
 }
 
 export function Loading({ label = '加载中…' }: { label?: string }) {
-  return <div className="center">{label}</div>;
+  return (
+    <div className="loading" role="status">
+      <span className="spinner" aria-hidden="true" />
+      {label}
+    </div>
+  );
 }
 
+/** A page-level heading: what this page is, and the count that goes with it. */
+export function PageHead({
+  title,
+  sub,
+  children,
+}: {
+  title: string;
+  sub?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="page-head">
+      <div>
+        <h1>{title}</h1>
+        {sub && <p className="muted small page-head-sub">{sub}</p>}
+      </div>
+      {children && <div className="page-head-actions">{children}</div>}
+    </div>
+  );
+}
+
+/**
+ * The resting state of a list with nothing in it. An outlined tray rather than
+ * bare text, so an empty table still reads as a deliberate state and not a
+ * rendering failure.
+ */
 export function Empty({ label }: { label: string }) {
-  return <div className="center">{label}</div>;
+  return (
+    <div className="empty">
+      <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true" focusable="false">
+        <path
+          d="M3.5 13.5 6 6.5A2 2 0 0 1 7.9 5h8.2a2 2 0 0 1 1.9 1.5l2.5 7v3.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinejoin="round"
+        />
+        <path d="M3.5 14.5h5l1 2h5l1-2h5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+      </svg>
+      {label}
+    </div>
+  );
 }
 
 export function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -182,7 +228,9 @@ export function Drawer({
     };
   }, [onClose]);
 
-  return (
+  // Portalled to <body>: several drawers are opened from inside a table row,
+  // and a block-level `<div>` is not legal as a `<tbody>` child.
+  return createPortal(
     <div className="drawer-layer">
       <div className="drawer-scrim" onClick={onClose} aria-hidden="true" />
       <aside className="drawer" role="dialog" aria-modal="true" aria-label={title}>
@@ -195,6 +243,7 @@ export function Drawer({
         <div className="drawer-body">{children}</div>
         {footer && <footer className="drawer-foot">{footer}</footer>}
       </aside>
-    </div>
+    </div>,
+    document.body,
   );
 }

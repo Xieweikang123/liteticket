@@ -2,25 +2,28 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api.ts';
 import type { Permission, RoleRow } from '../api.ts';
 import { useAuth, can } from '../auth.tsx';
-import { Empty, ErrorBox, ConfirmButton, Drawer, Field, Loading, formatTime } from '../ui.tsx';
+import { Empty, ErrorBox, ConfirmButton, Drawer, Field, Loading, PageHead, formatTime } from '../ui.tsx';
 
-/** Chinese labels for the fixed permission catalog. */
-const PERMISSION_LABEL: Record<Permission, string> = {
+/** Chinese labels for the fixed permission catalog. Exported for the menu form. */
+export const PERMISSION_LABEL: Record<Permission, string> = {
   'tickets.read': '查看工单',
   'tickets.write': '处理工单',
   'tickets.delete': '删除工单',
   'users.read': '查看用户',
   'users.manage': '管理用户',
   'roles.manage': '管理角色',
+  'menus.manage': '管理菜单',
 };
 
-const ORDER: Permission[] = [
+/** Catalog order, shared by the roles checklist and the menu permission picker. */
+export const ORDER: Permission[] = [
   'tickets.read',
   'tickets.write',
   'tickets.delete',
   'users.read',
   'users.manage',
   'roles.manage',
+  'menus.manage',
 ];
 
 export function RolesPage() {
@@ -28,6 +31,7 @@ export function RolesPage() {
   const [items, setItems] = useState<RoleRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
+  const [creating, setCreating] = useState(false);
   const manage = can(permissions, 'roles.manage');
 
   const load = useCallback(async () => {
@@ -53,9 +57,26 @@ export function RolesPage() {
 
   return (
     <>
-      {manage && <NewRoleCard onCreated={load} />}
+      <PageHead title="角色" sub={`共 ${items.length} 个角色`}>
+        {manage && (
+          <button className="primary" onClick={() => setCreating(true)}>
+            新建角色
+          </button>
+        )}
+      </PageHead>
+
+      {creating && (
+        <NewRoleDrawer
+          onClose={() => setCreating(false)}
+          onCreated={() => {
+            setCreating(false);
+            void load();
+          }}
+        />
+      )}
+
       <ErrorBox error={error} />
-      <div className="card" style={{ padding: 0 }}>
+      <div className="card">
         {loading ? (
           <Loading />
         ) : items.length === 0 ? (
@@ -68,7 +89,6 @@ export function RolesPage() {
                 <th style={{ width: 120 }}>角色</th>
                 <th style={{ width: 100 }}>标识</th>
                 <th>权限</th>
-                <th style={{ width: 140 }}>创建时间</th>
                 {manage && <th style={{ width: 260 }}>操作</th>}
               </tr>
             </thead>
@@ -279,8 +299,7 @@ function EditRoleDrawer({
   );
 }
 
-function NewRoleCard({ onCreated }: { onCreated: () => void }) {
-  const [open, setOpen] = useState(false);
+function NewRoleDrawer({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState('');
   const [label, setLabel] = useState('');
   const [description, setDescription] = useState('');
@@ -288,21 +307,12 @@ function NewRoleCard({ onCreated }: { onCreated: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
-  function reset() {
-    setName('');
-    setLabel('');
-    setDescription('');
-    setPermissions(['tickets.read']);
-  }
-
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
       await api.createRole({ name, label, description: description || null, permissions });
-      reset();
-      setOpen(false);
       onCreated();
     } catch (err) {
       setError(err);
@@ -311,58 +321,52 @@ function NewRoleCard({ onCreated }: { onCreated: () => void }) {
     }
   }
 
-  if (!open) {
-    return (
-      <div className="card">
-        <button className="primary" onClick={() => setOpen(true)}>
-          新建角色
-        </button>
-      </div>
-    );
-  }
-
   return (
-    <form className="card" onSubmit={submit}>
-      <h2>新建角色</h2>
-      <ErrorBox error={error} />
-      <div className="row">
-        <div style={{ width: 150 }}>
-          <Field label="角色标识（英文，创建后不可改）">
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. viewer"
-              style={{ width: '100%' }}
-              required
-            />
-          </Field>
-        </div>
-        <div style={{ flex: 1, minWidth: 140 }}>
-          <Field label="显示名称">
-            <input value={label} onChange={(e) => setLabel(e.target.value)} style={{ width: '100%' }} required />
-          </Field>
-        </div>
-        <div style={{ flex: 2, minWidth: 200 }}>
-          <Field label="说明（可选）">
-            <input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              style={{ width: '100%' }}
-            />
-          </Field>
-        </div>
-      </div>
-      <Field label="权限">
-        <PermissionChecklist value={permissions} onChange={setPermissions} />
-      </Field>
-      <div className="row">
-        <button className="primary" type="submit" disabled={busy || !name.trim() || !label.trim()}>
-          {busy ? '创建中…' : '创建'}
-        </button>
-        <button type="button" onClick={() => setOpen(false)}>
-          取消
-        </button>
-      </div>
-    </form>
+    <Drawer
+      title="新建角色"
+      onClose={onClose}
+      footer={
+        <>
+          <button
+            className="primary"
+            type="submit"
+            form="new-role-form"
+            disabled={busy || !name.trim() || !label.trim()}
+          >
+            {busy ? '创建中…' : '创建'}
+          </button>
+          <button type="button" onClick={onClose}>
+            取消
+          </button>
+        </>
+      }
+    >
+      <form id="new-role-form" onSubmit={submit}>
+        <ErrorBox error={error} />
+        <Field label="角色标识（英文，创建后不可改）">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. viewer"
+            style={{ width: '100%' }}
+            autoFocus
+            required
+          />
+        </Field>
+        <Field label="显示名称">
+          <input value={label} onChange={(e) => setLabel(e.target.value)} style={{ width: '100%' }} required />
+        </Field>
+        <Field label="说明（可选）">
+          <input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            style={{ width: '100%' }}
+          />
+        </Field>
+        <Field label="权限">
+          <PermissionChecklist value={permissions} onChange={setPermissions} />
+        </Field>
+      </form>
+    </Drawer>
   );
 }

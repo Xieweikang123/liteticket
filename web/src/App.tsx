@@ -1,13 +1,15 @@
+import { useEffect, useRef, useState } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { useAuth, can } from './auth.tsx';
+import { useAuth } from './auth.tsx';
 import { Loading } from './ui.tsx';
 import { LoginPage } from './pages/Login.tsx';
 import { TicketListPage } from './pages/TicketList.tsx';
 import { TicketDetailPage } from './pages/TicketDetail.tsx';
 import { UsersPage } from './pages/Users.tsx';
 import { RolesPage } from './pages/Roles.tsx';
+import { MenusPage } from './pages/Menus.tsx';
 import { TokensPage } from './pages/Tokens.tsx';
-import { AccountPage } from './pages/Account.tsx';
+import { AccountPage, ChangePasswordDrawer } from './pages/Account.tsx';
 
 /**
  * A nav tab. React Router already appends `active` to the className it is
@@ -22,35 +24,108 @@ function Tab({ to, end, children }: { to: string; end?: boolean; children: React
   );
 }
 
+/**
+ * Identity and the account actions, folded into one control.
+ *
+ * 退出 used to sit loose in the bar next to the user's name, and 修改密码 had a
+ * tab of its own — three separate places for one account. A menu keeps the
+ * work tabs for work and gathers the account's own actions behind the name
+ * they belong to.
+ *
+ * It closes on outside click and on Escape because it is anchored to a
+ * toggle rather than to a scrim: a dropdown that only closes by clicking its
+ * own button strands anyone who opened it by mistake. The 修改密码 entry opens a
+ * drawer instead of a route, so the page underneath is never left behind.
+ */
+function UserMenu() {
+  const { user, logout } = useAuth();
+  const [open, setOpen] = useState(false);
+  const [changing, setChanging] = useState(false);
+  const wrap = useRef<HTMLSpanElement>(null);
+  // The badge names the built-in `admin` role, not the capability: a custom
+  // role holding `roles.manage` is not this one, and labelling it 管理员 would
+  // be a claim the row itself does not make.
+  const admin = user?.role === 'admin';
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(e: MouseEvent) {
+      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false);
+    }
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  if (!user) return <Link to="/login">登录</Link>;
+
+  return (
+    <span className="who" ref={wrap}>
+      <button
+        className="who-toggle"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <span className="who-name">{user.name}</span>
+        {admin && <span className="who-role">管理员</span>}
+        <span className="who-caret" aria-hidden="true">
+          ▾
+        </span>
+      </button>
+      {open && (
+        <div className="who-menu" role="menu">
+          <div className="who-menu-head">
+            <span className="who-menu-name">{user.name}</span>
+            <span className="who-menu-user mono">{user.username}</span>
+          </div>
+          <Link to="/account" role="menuitem" onClick={() => setOpen(false)}>
+            账号设置
+          </Link>
+          <button
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              setChanging(true);
+            }}
+          >
+            修改密码
+          </button>
+          <button role="menuitem" onClick={() => void logout()}>
+            退出
+          </button>
+        </div>
+      )}
+      {changing && <ChangePasswordDrawer onClose={() => setChanging(false)} />}
+    </span>
+  );
+}
+
 function TopBar() {
-  const { user, permissions, logout } = useAuth();
-  const admin = can(permissions, 'roles.manage');
-  const canReadUsers = can(permissions, 'users.read');
+  const { menus } = useAuth();
+
   return (
     <header className="topbar">
-      <span className="brand">liteticket</span>
-      <nav>
-        <Tab to="/" end>
-          工单
-        </Tab>
-        {canReadUsers && <Tab to="/users">用户</Tab>}
-        {admin && <Tab to="/roles">角色</Tab>}
-        <Tab to="/tokens">我的令牌</Tab>
-        <Tab to="/account">账号</Tab>
-      </nav>
-      <span className="who">
-        {user ? (
-          <>
-            <span className="who-name">{user.name}</span>
-            {admin && <span className="who-role">管理员</span>}
-            <button className="link" onClick={() => void logout()}>
-              退出
-            </button>
-          </>
-        ) : (
-          <Link to="/login">登录</Link>
-        )}
+      <span className="brand">
+        <span className="brand-mark" aria-hidden="true">
+          LT
+        </span>
+        liteticket
       </span>
+      <nav>
+        {menus.map((m) => (
+          <Tab key={m.id} to={m.path} end={m.path === '/'}>
+            {m.label}
+          </Tab>
+        ))}
+      </nav>
+      <UserMenu />
     </header>
   );
 }
@@ -117,6 +192,14 @@ export function App() {
             element={
               <RequireAuth>
                 <RolesPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/menus"
+            element={
+              <RequireAuth>
+                <MenusPage />
               </RequireAuth>
             }
           />

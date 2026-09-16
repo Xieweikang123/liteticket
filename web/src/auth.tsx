@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { api, getToken, setToken, setUnauthorizedHandler } from './api.ts';
-import type { AuthUser, Permission } from './api.ts';
+import type { AuthUser, MenuRow, Permission } from './api.ts';
 
 interface AuthState {
   user: AuthUser | null;
@@ -11,6 +11,14 @@ interface AuthState {
    * request, so hiding a control is cosmetic and never the security boundary.
    */
   permissions: Permission[];
+  /**
+   * The nav tabs this session may see, already filtered by the server. Held
+   * here rather than in the top bar so the menu management page can refresh
+   * the nav after an edit without a full reload.
+   */
+  menus: MenuRow[];
+  /** Re-fetch the nav after a menu is created, edited, or removed. */
+  reloadMenus: () => Promise<void>;
   /** True until the stored token has been checked against the server. */
   loading: boolean;
   login: (username: string, password: string) => Promise<void>;
@@ -35,7 +43,21 @@ const AuthContext = createContext<AuthState | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [permissions, setPermissions] = useState<Permission[]>([]);
+  const [menus, setMenus] = useState<MenuRow[]>([]);
   const [loading, setLoading] = useState(true);
+
+  /**
+   * The nav is data, so it is fetched with the session. A failure is not fatal:
+   * the tabs are navigation, and the routes they point at remain reachable.
+   */
+  const reloadMenus = useCallback(async () => {
+    try {
+      const r = await api.listMenus();
+      setMenus(r.items);
+    } catch {
+      // Leave the previous list in place; the routes are still reachable.
+    }
+  }, []);
 
   /**
    * Sign out. The server is told to delete the session row first, so the
@@ -58,6 +80,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(null);
     setUser(null);
     setPermissions([]);
+    setMenus([]);
   }, []);
 
   useEffect(() => {
@@ -80,12 +103,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // token has no user and stays authorized-but-anonymous.
         setUser(me.user ?? null);
         setPermissions(me.permissions ?? []);
+        void reloadMenus();
       })
       .catch(() => {
         if (!cancelled) {
           setToken(null);
           setUser(null);
           setPermissions([]);
+          setMenus([]);
         }
       })
       .finally(() => {
@@ -101,11 +126,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(res.token);
     setUser(res.user);
     setPermissions(res.permissions ?? []);
-  }, []);
+    await reloadMenus();
+  }, [reloadMenus]);
 
   const value = useMemo<AuthState>(
-    () => ({ user, permissions, loading, login, logout }),
-    [user, permissions, loading, login, logout],
+    () => ({ user, permissions, menus, reloadMenus, loading, login, logout }),
+    [user, permissions, menus, reloadMenus, loading, login, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
